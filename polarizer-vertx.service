@@ -1,0 +1,15 @@
+[Unit]
+Description=Polarizer vertx microservices
+
+[Service]
+User=nobody
+# The configuration file application.properties should be here:
+WorkingDirectory=/opt/polarizer
+ExecStart=/usr/bin/java -Xmx256m -jar application.jar
+SuccessExitStatus=143
+TimeoutStopSec=10
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -20,6 +20,8 @@ public class TestCaseData extends PolarizerData {
         super(id);
     }
 
+    // FIXME: This is really ugly.  I think we should return a new copy with only the modifications needed.  This will
+    // be slower as it will require a mem copy, but I think it's worth it
     public TestCaseData merge(TestCaseData other) {
         if (other.completed != null)
             this.completed.addAll(other.completed);

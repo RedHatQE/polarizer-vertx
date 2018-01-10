@@ -18,6 +18,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Paths;
 
 public class MainVerticle extends AbstractVerticle {
     private static Logger logger = LogManager.getLogger(Polarizer.class.getSimpleName());
@@ -33,6 +34,7 @@ public class MainVerticle extends AbstractVerticle {
     public void start() throws IOException {
         VertxOptions opts = new VertxOptions();
         opts.setBlockedThreadCheckInterval(120000);
+        logger.info("Starting MainVerticle");
         this.vertx = Vertx.vertx(opts);
         DeploymentOptions pOpts = this.setupConfig(PolarizerVertConfig.class, POLARIZER_ENV, POLARIZER_PROP);
         DeploymentOptions tOpts = this.setupConfig(APITestSuiteConfig.class, TEST_ENV, TEST_PROP);
@@ -56,7 +58,9 @@ public class MainVerticle extends AbstractVerticle {
         DeploymentOptions opts = new DeploymentOptions();
         String envPath = System.getenv(env);
         String path = System.getProperty(prop);
-        String filePath = envPath == null ? "" : path == null ? "" : path;
+        String home = System.getProperty("user.home");
+        String defaultCfg = Paths.get(home, ".polarizer", "polarizer-config.json").toString();
+        String filePath = envPath != null ? envPath : path != null ? path : defaultCfg;
         File fpath = new File(filePath);
         T pCfg;
         if (fpath.exists()) {

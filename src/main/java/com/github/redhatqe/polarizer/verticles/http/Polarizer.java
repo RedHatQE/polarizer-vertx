@@ -18,7 +18,9 @@ import io.reactivex.Observable;
 import io.reactivex.ObservableEmitter;
 import io.reactivex.functions.Consumer;
 import io.vertx.core.http.HttpMethod;
+import io.vertx.core.http.HttpServerOptions;
 import io.vertx.core.json.JsonObject;
+import io.vertx.core.net.JksOptions;
 import io.vertx.reactivex.core.AbstractVerticle;
 import io.vertx.reactivex.core.Future;
 import io.vertx.reactivex.core.WorkerExecutor;
@@ -41,10 +43,35 @@ import java.util.UUID;
 public class Polarizer extends AbstractVerticle {
 
     private static Logger logger = LogManager.getLogger(Polarizer.class.getSimpleName());
-    public static final String CONFIG_HTTP_SERVER_PORT = "http.server.port";
+    public static final String CONFIG_HTTP_SERVER_PORT = "port";
+    public static final String CONFIG_HTTP_SERVER_HOST = "host";
     public static final String UPLOAD_DIR = "/tmp";
     private EventBus bus;
+    private int port;
 
+    /**
+     * This method will take the bytes from the upload handler and accumulate them to a Buffer.  Once the completion
+     * event (from the Flowable object created from the upload object) is sent, serialize an object.  That means that
+     * the data that was sent over the wire must be serializable into a class object based on Serializer.from method.
+     * Once the data object has been deserialized into an Object type, call the supplied Consumer function on it to
+     * perform some side effect (as all Consumer functions do).
+     *
+     * The purpose of this function is to:
+     * - Buffer up and accumulate data chunks coming over the wire
+     * - Deserialize buffered data to an Object
+     * - Call a side-effecting function on the Object
+     * - Mutate the state of the data object
+     * - Pass the data object to the emitter's onNext (if successful) or call emitter's onError if not
+     *
+     * @param upload upload handler object
+     * @param t Tuple containing the String and UUID
+     * @param data The data (of type T) to pass through to emitter's onNext
+     * @param cls An class type to serialize from
+     * @param fn Consumer function that takes a U type and calls it (recall Consumers return nothing)
+     * @param emitter an ObservableEmitter to pass data/error/completions to
+     * @param <T> The type of the data that will be passed to emitter
+     * @param <U> The type of the argument the Consumer expects
+     */
     private <T extends IComplete, U> void
     argsUploader( HttpServerFileUpload upload
                 , Tuple<String, UUID> t
@@ -74,6 +101,18 @@ public class Polarizer extends AbstractVerticle {
                 });
     }
 
+    /**
+     * This method is similar to the argsUploader method, but instead of deserializing the buffered data into an Object,
+     * this writes the data to the file system.
+     *
+     * @param upload
+     * @param t
+     * @param path
+     * @param data
+     * @param emitter
+     * @param fn
+     * @param <T>
+     */
     private <T extends IComplete> void
     fileUploader( HttpServerFileUpload upload
                 , Tuple<String, UUID> t
@@ -100,6 +139,17 @@ public class Polarizer extends AbstractVerticle {
                 });
     }
 
+    /**
+     * Creates an Observable that works for multipart uploads (eg when you use curl -F).  Each upload request will be
+     * tagged with a name, which will be one of xunit|xargs|mapping.  Depending on which upload tag is received, the
+     * method will do the appropriate thing.
+     *
+     * Note that the calls to onNext/onError are handled in the argsUploader and fileUploader methods.
+     *
+     * @param id
+     * @param req
+     * @return
+     */
     private Observable<XUnitGenData> makeXGDObservable(UUID id, HttpServerRequest req) {
         return Observable.create(emitter -> {
             try {
@@ -136,6 +186,11 @@ public class Polarizer extends AbstractVerticle {
         });
     }
 
+    /**
+     * Handler for the /xunit/generate endpoint
+     *
+     * @param rc
+     */
     private void xunitGenerator(RoutingContext rc) {
         logger.info("In xunitGenerator");
         HttpServerRequest req = rc.request();
@@ -330,9 +385,9 @@ public class Polarizer extends AbstractVerticle {
      * TODO:  Need to be able to differentiate suites to run.
      * TODO:  Need to be able to see the test results live (perhaps make this a websocket)
      *
-     * @param ctx
+     * @param ctx RoutingContext supplied by vertx
      */
-    public void test(RoutingContext ctx) {
+    private void test(RoutingContext ctx) {
         HttpServerRequest req = ctx.request();
         req.bodyHandler(upload -> {
             logger.info("Got the test config file");
@@ -347,12 +402,35 @@ public class Polarizer extends AbstractVerticle {
         });
     }
 
+    private void hello(RoutingContext rc) {
+        HttpServerRequest req = rc.request();
+        JsonObject jo = new JsonObject();
+        jo.put("result", "congratulations, server responded");
+        req.response().end(jo.encode());
+    }
+
+    public HttpServerOptions setupTLS(HttpServerOptions opts) {
+        String keystore = this.config().getString("keystore-path");
+        String keypass = this.config().getString("keystore-password");
+        if (opts == null)
+            opts = new HttpServerOptions();
+        return opts
+                .setSsl(true)
+                .setKeyStoreOptions(new JksOptions()
+                        .setPath(keystore)
+                        .setPassword(keypass));
+    }
+
     public void start() {
         this.bus = vertx.eventBus();
-        HttpServer server = vertx.createHttpServer();
+        port = config().getInteger(CONFIG_HTTP_SERVER_PORT, 9090);
+        String host = config().getString(CONFIG_HTTP_SERVER_HOST, "rhsm-cimetrics.usersys.redhat.com");
+        HttpServerOptions opts = new HttpServerOptions()
+                .setHost(host)
+                .setReusePort(true);
+        HttpServer server = vertx.createHttpServer(opts);  // TODO: pass opts to the method for TLS
         Router router = Router.router(vertx);
 
-        int portNumber = config().getInteger(CONFIG_HTTP_SERVER_PORT, 9090);
         server.requestHandler(req -> {
             req.setExpectMultipart(true);
             router.route("/testcase/mapper").method(HttpMethod.POST).handler(this::testCaseMapper);
@@ -360,6 +438,7 @@ public class Polarizer extends AbstractVerticle {
             router.post("/xunit/import").handler(this::xunitImport);
             router.post("/testcase/import").handler(this::testcaseImport);
             router.post("/test").handler(this::test);
+            router.get("/hello").handler(this::hello);
 
             router.route().handler(BodyHandler.create()
                     .setBodyLimit(209715200L)                 // Max Jar size is 200MB
@@ -368,8 +447,8 @@ public class Polarizer extends AbstractVerticle {
 
             router.accept(req);
         })
-        .rxListen(portNumber)
-        .subscribe(succ -> logger.info("Server is now listening"),
+        .rxListen(port, host)
+        .subscribe(succ -> logger.info(String.format("Server is now listening on %s:%d", host, this.port)),
                    err -> logger.info(String.format("Server could not be started %s", err.getMessage())));
     }
 }

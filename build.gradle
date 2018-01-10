@@ -35,8 +35,8 @@ String vertxVersion = '3.5.0'
 String mainVerticleName = 'com.github.redhatqe.polarizer.MainVerticle'
 String watchForChange = 'src/**/*'
 String doOnChange = '/.gradlew classes'
-String projectURL = 'https://github.com/RedHatQE/polarizer'
-String devURL = 'git@github.com:RedHatQE/polarizer.git'
+String projectURL = 'https://github.com/Polarizer-Projects/polarizer-vertx.git'
+String devURL = 'git@github.com:Polarizer-Projects/polarizer-vertx.git'
 String propFile = System.getProperty("user.home") + "/.polarizer/polarizer-project.properties"
 
 class Creds {
@@ -80,6 +80,7 @@ dependencies {
     compile "io.vertx:vertx-amqp-bridge:${vertxVersion}"
     compile "io.vertx:vertx-rx-java2:${vertxVersion}"
     compile "io.vertx:vertx-unit:${vertxVersion}"
+    compile "io.vertx:vertx-auth-oauth2:${vertxVersion}"
     compile 'io.reactivex.rxjava2:rxjava:2.1.6'
     compile group: 'org.apache.logging.log4j', name: 'log4j-api', version: '2.8.2'
     compile group: 'org.apache.logging.log4j', name: 'log4j-core', version: '2.8.2'
@@ -144,4 +145,25 @@ artifacts {
 
 signing {
     sign configurations.archives
+}
+
+
+artifactory {
+    contextUrl = "${artifactory_contextUrl}"   //The base Artifactory URL if not overridden by the publisher/resolver
+    publish {
+        repository {
+            repoKey = 'oss-snapshot-local'
+            username = "${artifactory_user}"
+            password = "${artifactory_password}"
+            maven = true
+        }
+    }
+    resolve {
+        repository {
+            repoKey = 'plugins-release'
+            username = "${artifactory_user}"
+            password = "${artifactory_password}"
+            maven = true
+        }
+    }
 }
