@@ -85,7 +85,7 @@ dependencies {
     compile group: 'org.apache.logging.log4j', name: 'log4j-api', version: '2.8.2'
     compile group: 'org.apache.logging.log4j', name: 'log4j-core', version: '2.8.2'
     compile 'com.github.redhatqe.polarizer:reporter:0.2.1'
-    compile 'com.github.redhatqe.polarizer:polarizer:0.2.2'
+    compile 'com.github.redhatqe.polarizer:polarizer:0.2.2-SNAPSHOT'
 }
 
 task wrapper(type: Wrapper) {
@@ -141,26 +141,127 @@ task sourceJar(type: Jar) {
 
 artifacts {
     archives jar, sourceJar, javadocJar, shadowJar
+    //published jar
+    //published sourceJar
+    //published javadocJar
+    //published shadowJar
+}
+
+configurations {
+    published
 }
 
 signing {
     sign configurations.archives
 }
 
+// Create the pom configuration:
+def pomConfig = {
+    licenses {
+        license {
+            name "The Apache Software License, Version 2.0"
+            url "http://www.apache.org/licenses/LICENSE-2.0.txt"
+        }
+    }
+    developers {
+        developer {
+            id "stoner"
+            name "Sean Toner"
+            email "stoner@redhat.com"
+        }
+    }
+
+    scm {
+        connection "scm:git:${projectURL}.git"
+        developerConnection "scm:git:${devURL}"
+        url "${projectURL}"
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            artifact sourceJar
+            artifact javadocJar
+            groupId project.group
+            artifactId project.name
+            version "${version}"
+            pom.withXml {
+                def root = asNode()
+                root.appendNode('description', 'JAXB classes for xunit and testcases, TestNG reporter')
+                root.appendNode('name', 'reporter')
+                root.appendNode('url', "${projectURL}")
+                root.children().last() + pomConfig
+            }
+        }
+    }
+}
+
+bintray {
+    user = credsBintray.user
+    key = credsBintray.pw
+    override = true
+    publish = true
+    pkg {
+        repo = project.name
+        name = project.name
+        licenses = ['Apache-2.0']
+        vcsUrl = projectURL
+        version {
+            name = "${version}"
+            desc = 'Data definitions for xunit and testcase for polarize.  TestNG Reporter'
+            released  = new Date()
+            gpg {
+                sign = true //Determines whether to GPG sign the files. The default is false
+            }
+            mavenCentralSync {
+                sync = true //[Default: true] Determines whether to sync the version to Maven Central.
+                user =  "${credsOssrh.user}" //OSS user token: mandatory
+                password = "${credsOssrh.pw}" //OSS user password: mandatory
+                close = '1' //Optional property. By default the staging repository is closed and artifacts are released to Maven Central. You can optionally turn this behaviour off (by puting 0 as value) and release the version manually.
+            }
+        }
+    }
+    publications = ['mavenJava']
+}
 
 artifactory {
     contextUrl = "${artifactory_contextUrl}"   //The base Artifactory URL if not overridden by the publisher/resolver
+    // This information is used to upload to artifactory for snapshots
     publish {
         repository {
-            repoKey = 'oss-snapshot-local'
+            repoKey = version.endsWith("SNAPSHOT") ? 'oss-snapshot-local' : 'oss-release-local'
             username = "${artifactory_user}"
             password = "${artifactory_password}"
             maven = true
         }
+
+        defaults {
+            //List of Gradle Configurations (names or objects) from which to collect the list of artifacts to be deployed to Artifactory.
+            publications('mavenJava')
+
+            //properties = ['qa.level': 'basic', 'q.os': 'win32, deb, osx']  //Optional map of properties to attach to all published artifacts
+            /*
+            The properties closure in the "defaults" task uses the following syntax:
+            properties {
+                publicationName 'group:module:version:classifier@type', key1:'value1', key2:'value2', ...
+            }
+            publicationName: A valid name for a publication of the project. You can use all to apply the properties to all publications.
+            group:module:version:classifier@type: A filter that specifies the artifacts to which properties should be attached.
+            The filter may contain wildcards: * for all characters or ? for a single character.
+            key:'value': A list of key/value properties that will be attached to to the published artifacts matching the filter.
+            */
+
+            publishBuildInfo = true   //Publish build-info to Artifactory (true by default)
+            publishArtifacts = true   //Publish artifacts to Artifactory (true by default)
+            publishPom = true   //Publish generated POM files to Artifactory (true by default).
+            publishIvy = true   //Publish generated Ivy descriptor files to Artifactory (true by default).
+        }
     }
     resolve {
         repository {
-            repoKey = 'plugins-release'
+            repoKey = version.endsWith("SNAPSHOT") ? "libs-snapshot" : "libs-release"
             username = "${artifactory_user}"
             password = "${artifactory_password}"
             maven = true
