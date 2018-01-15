@@ -141,10 +141,6 @@ task sourceJar(type: Jar) {
 
 artifacts {
     archives jar, sourceJar, javadocJar, shadowJar
-    //published jar
-    //published sourceJar
-    //published javadocJar
-    //published shadowJar
 }
 
 configurations {
@@ -184,6 +180,7 @@ publishing {
             from components.java
             artifact sourceJar
             artifact javadocJar
+            artifact shadowJar
             groupId project.group
             artifactId project.name
             version "${version}"
@@ -199,7 +196,7 @@ publishing {
 }
 
 bintray {
-    user = credsBintray.user
+    user = "polarizer-projects"
     key = credsBintray.pw
     override = true
     publish = true
@@ -219,7 +216,7 @@ bintray {
                 sync = true //[Default: true] Determines whether to sync the version to Maven Central.
                 user =  "${credsOssrh.user}" //OSS user token: mandatory
                 password = "${credsOssrh.pw}" //OSS user password: mandatory
-                close = '1' //Optional property. By default the staging repository is closed and artifacts are released to Maven Central. You can optionally turn this behaviour off (by puting 0 as value) and release the version manually.
+                close = '1' //Optional property. 1 = the staging repository is closed and artifacts are released .
             }
         }
     }
@@ -246,12 +243,7 @@ artifactory {
             The properties closure in the "defaults" task uses the following syntax:
             properties {
                 publicationName 'group:module:version:classifier@type', key1:'value1', key2:'value2', ...
-            }
-            publicationName: A valid name for a publication of the project. You can use all to apply the properties to all publications.
-            group:module:version:classifier@type: A filter that specifies the artifacts to which properties should be attached.
-            The filter may contain wildcards: * for all characters or ? for a single character.
-            key:'value': A list of key/value properties that will be attached to to the published artifacts matching the filter.
-            */
+            }*/
 
             publishBuildInfo = true   //Publish build-info to Artifactory (true by default)
             publishArtifacts = true   //Publish artifacts to Artifactory (true by default)
@@ -259,6 +251,7 @@ artifactory {
             publishIvy = true   //Publish generated Ivy descriptor files to Artifactory (true by default).
         }
     }
+
     resolve {
         repository {
             repoKey = version.endsWith("SNAPSHOT") ? "libs-snapshot" : "libs-release"

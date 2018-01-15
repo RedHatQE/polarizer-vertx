@@ -52,4 +52,9 @@ public class XUnitGenData extends XUnitData {
     public void setMapping(String mapping) {
         this.mapping = mapping;
     }
+
+    @Override
+    public boolean done() {
+        return this.completed.containsAll(XUnitGenData.done);
+    }
 }

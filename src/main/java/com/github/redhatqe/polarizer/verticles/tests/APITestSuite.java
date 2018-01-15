@@ -37,7 +37,7 @@ public class APITestSuite extends AbstractVerticle {
         suite = TestSuite.create("API Tests");
         logger.info(String.format("Bringing up %s Verticle", APITestSuite.class.getSimpleName()));
 
-        port = this.config().getInteger("port", 9090);
+        port = this.config().getInteger("port", 9000);
         // TODO: Make a service endpoint on Polarizer and have it send msg on Event bus
         this.registerEventBus();
     }
@@ -62,7 +62,7 @@ public class APITestSuite extends AbstractVerticle {
         logger.info(String.format("%s Verticle now registered to event bus on address %s", vertName, address));
     }
 
-    private Callback<JsonNode> defaultCallBack(TestContext ctx) {
+    private Callback<JsonNode> defaultCallBack(String ept, TestContext ctx) {
         return new Callback<JsonNode>() {
             @Override
             public void completed(HttpResponse<JsonNode> response) {
@@ -74,7 +74,7 @@ public class APITestSuite extends AbstractVerticle {
 
             @Override
             public void failed(UnirestException e) {
-                logger.error("Request to /xunit/import failed");
+                logger.error(String.format("Request to %s failed", ept));
             }
 
             @Override
@@ -92,8 +92,8 @@ public class APITestSuite extends AbstractVerticle {
         this.logger.info("================ Starting tests ================");
         suite.test("basic xunit generate test", this.testXunitGenerate());
         suite.test("second xunit generate test", this.testXunitGenerate());
-        //suite.test("basic xunit import test", this.testXunitImport());
-        //suite.test("second xunit import test", this.testXunitImport());
+        suite.test("basic xunit import test", this.testXunitImport());
+        suite.test("second xunit import test", this.testXunitImport());
 
         ReportOptions consoleReport = new ReportOptions().
                 setTo("console");
@@ -122,7 +122,7 @@ public class APITestSuite extends AbstractVerticle {
                     .header("accept", "application/json")
                     .field("xunit", new File(xunit))
                     .field("xargs", new File(xargs))
-                    .asJsonAsync(this.defaultCallBack(tctx));
+                    .asJsonAsync(this.defaultCallBack("/xunit/import", tctx));
             tctx.assertTrue(1 == 1);
         };
     }
@@ -141,7 +141,7 @@ public class APITestSuite extends AbstractVerticle {
                     .field("xunit", new File(xunit))
                     .field("xargs", new File(xargs))
                     .field("mapping", new File(mapping))
-                    .asJsonAsync(this.defaultCallBack(ctx));
+                    .asJsonAsync(this.defaultCallBack("/xunit/generate", ctx));
             ctx.assertTrue(true);
         };
     }

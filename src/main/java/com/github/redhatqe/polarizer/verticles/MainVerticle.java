@@ -35,7 +35,7 @@ public class MainVerticle extends AbstractVerticle {
         VertxOptions opts = new VertxOptions();
         opts.setBlockedThreadCheckInterval(120000);
         logger.info("Starting MainVerticle");
-        this.vertx = Vertx.vertx(opts);
+        //Vertx.vertx(opts);
         DeploymentOptions pOpts = this.setupConfig(PolarizerVertConfig.class, POLARIZER_ENV, POLARIZER_PROP);
         DeploymentOptions tOpts = this.setupConfig(APITestSuiteConfig.class, TEST_ENV, TEST_PROP);
 

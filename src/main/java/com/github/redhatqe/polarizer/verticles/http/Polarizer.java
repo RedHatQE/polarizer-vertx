@@ -41,7 +41,6 @@ import java.util.UUID;
 
 
 public class Polarizer extends AbstractVerticle {
-
     private static Logger logger = LogManager.getLogger(Polarizer.class.getSimpleName());
     public static final String CONFIG_HTTP_SERVER_PORT = "port";
     public static final String CONFIG_HTTP_SERVER_HOST = "host";
@@ -189,6 +188,9 @@ public class Polarizer extends AbstractVerticle {
     /**
      * Handler for the /xunit/generate endpoint
      *
+     * This method takes a non-polarion compliant xunit file, a polarizer-xunit.json config file, and the mapping.json
+     * file, and returns a compliant xunit file ready to be sent to polarion.
+     *
      * @param rc
      */
     private void xunitGenerator(RoutingContext rc) {
@@ -197,7 +199,9 @@ public class Polarizer extends AbstractVerticle {
 
         UUID id = UUID.randomUUID();
         Observable<XUnitGenData> s$ = this.makeXGDObservable(id, req);
-        // Scan is like a continuing reduce
+        // Scan is like a continuing reduce that accumulates a partial result on each new item rather than wait for all
+        // items in the Observable to finish sending (which if the Observable never sends a completion event, will never
+        // happen).
         s$.scan(XUnitGenData::merge)
                 .subscribe(xgd -> {
                     if (xgd.done()) {
@@ -264,6 +268,17 @@ public class Polarizer extends AbstractVerticle {
     /**
      * Handler for the /xunit/import endpoint.
      *
+     * Takes a XUnit Importer compliant xunit xml file and a polarizer-xunit.json config, and resends it to the polarion
+     * server.  Currently, this method will block until a response message is received from the UMB for the response or
+     * until the timeout passes (configured in the broker.config file).
+     *
+     * FIXME: Probably not a good idea to block since that will hold open a socket connection or require some kind of
+     * session timeout heartbeat.  Ideally, this should be "fire and forget".  To know if a response got completed,
+     * the message can go to a persistent queue and check for the response message there.  If there is no response after
+     * the default timeout, a user can check the Polarion browser queue to see if it's still in the queue, and if the
+     * request is still in the queue, keep waiting.  If it is not in the queue, and the response timed out, then some
+     * kind of error happened, and user can retry.
+     *
      * @param rc context passed by server
      */
     private void xunitImport(RoutingContext rc) {
@@ -274,10 +289,13 @@ public class Polarizer extends AbstractVerticle {
         Observable<XUnitData> s$ = this.makeXImpObservable(id, req);
         // Once we have a "complete" XUnitData object, make a XUnitService request.  Once that is complete, send a
         // response back.  The XUnitService.request() is performed in a worker verticle since it blocks
-        // TODO: Make this a websocket since it can take a long time for XUnitService.request to complete
+        // TODO: Make this a websocket since it can take a long time for XUnitService.request to complete.  Ideally,
+        // this should be "fire and forget".  If we need to know if it got completed, we should have a persistent
+        // queue "mailbox" to be notified if the request went through.
         s$.scan(XUnitData::merge)
                 .subscribe((XUnitData xu) -> {
                     if (xu.done()) {
+                        // Run this code in a Worker Verticle, since this can take a long time.
                         WorkerExecutor executor = vertx.createSharedWorkerExecutor("XUnitService.request");
                         executor.rxExecuteBlocking((Future<JsonObject> fut) -> {
                             try {
@@ -423,7 +441,7 @@ public class Polarizer extends AbstractVerticle {
 
     public void start() {
         this.bus = vertx.eventBus();
-        port = config().getInteger(CONFIG_HTTP_SERVER_PORT, 9090);
+        port = config().getInteger(CONFIG_HTTP_SERVER_PORT, 9000);
         String host = config().getString(CONFIG_HTTP_SERVER_HOST, "rhsm-cimetrics.usersys.redhat.com");
         HttpServerOptions opts = new HttpServerOptions()
                 .setHost(host)
