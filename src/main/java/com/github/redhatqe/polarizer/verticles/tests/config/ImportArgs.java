@@ -11,6 +11,8 @@ public class ImportArgs implements Validator {
     private String xml;
     @JsonProperty(required = true)
     private String args;
+    @JsonProperty
+    private String mapping;
 
     public ImportArgs() {
 
@@ -37,5 +39,13 @@ public class ImportArgs implements Validator {
 
     public void setArgs(String args) {
         this.args = args;
+    }
+
+    public String getMapping() {
+        return mapping;
+    }
+
+    public void setMapping(String mapping) {
+        this.mapping = mapping;
     }
 }

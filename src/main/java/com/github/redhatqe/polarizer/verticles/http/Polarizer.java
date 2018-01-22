@@ -1,18 +1,31 @@
 package com.github.redhatqe.polarizer.verticles.http;
 
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import com.github.redhatqe.polarizer.ImporterRequest;
+import com.github.redhatqe.polarizer.data.ProcessingInfo;
 import com.github.redhatqe.polarizer.importer.XUnitService;
+import com.github.redhatqe.polarizer.messagebus.CIBusListener;
+import com.github.redhatqe.polarizer.messagebus.DefaultResult;
+import com.github.redhatqe.polarizer.messagebus.MessageHandler;
+import com.github.redhatqe.polarizer.messagebus.MessageResult;
+import com.github.redhatqe.polarizer.messagebus.config.BrokerConfig;
 import com.github.redhatqe.polarizer.reflector.MainReflector;
+import com.github.redhatqe.polarizer.reporter.IdParams;
 import com.github.redhatqe.polarizer.reporter.XUnitReporter;
 import com.github.redhatqe.polarizer.reporter.configuration.Serializer;
+import com.github.redhatqe.polarizer.reporter.configuration.TestCaseInfo;
 import com.github.redhatqe.polarizer.reporter.configuration.data.TestCaseConfig;
 import com.github.redhatqe.polarizer.reporter.configuration.data.XUnitConfig;
+import com.github.redhatqe.polarizer.reporter.importer.testcase.Parameter;
+import com.github.redhatqe.polarizer.reporter.importer.testcase.Testcases;
+import com.github.redhatqe.polarizer.reporter.jaxb.IJAXBHelper;
+import com.github.redhatqe.polarizer.reporter.jaxb.JAXBReporter;
 import com.github.redhatqe.polarizer.reporter.utils.Tuple;
 import com.github.redhatqe.polarizer.utils.FileHelper;
-import com.github.redhatqe.polarizer.verticles.http.data.IComplete;
-import com.github.redhatqe.polarizer.verticles.http.data.TestCaseData;
-import com.github.redhatqe.polarizer.verticles.http.data.XUnitData;
-import com.github.redhatqe.polarizer.verticles.http.data.XUnitGenData;
+import com.github.redhatqe.polarizer.verticles.http.data.*;
 import com.github.redhatqe.polarizer.verticles.tests.APITestSuite;
 import io.reactivex.Observable;
 import io.reactivex.ObservableEmitter;
@@ -35,9 +48,11 @@ import io.vertx.reactivex.ext.web.handler.BodyHandler;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 
 public class Polarizer extends AbstractVerticle {
@@ -104,11 +119,11 @@ public class Polarizer extends AbstractVerticle {
      * This method is similar to the argsUploader method, but instead of deserializing the buffered data into an Object,
      * this writes the data to the file system.
      *
-     * @param upload
-     * @param t
-     * @param path
-     * @param data
-     * @param emitter
+     * @param upload upload handler object
+     * @param t a Tuple containing the type string and UUID that is being worked on
+     * @param path path for the file being uploaded
+     * @param data The data (of type T) to pass through to emitter's onNext
+     * @param emitter an ObservableEmitter to pass data/error/completions to
      * @param fn
      * @param <T>
      */
@@ -145,9 +160,9 @@ public class Polarizer extends AbstractVerticle {
      *
      * Note that the calls to onNext/onError are handled in the argsUploader and fileUploader methods.
      *
-     * @param id
-     * @param req
-     * @return
+     * @param id UUID to keep track of which request is being handled
+     * @param req request from vertx server
+     * @return Observable of XUnitGenData
      */
     private Observable<XUnitGenData> makeXGDObservable(UUID id, HttpServerRequest req) {
         return Observable.create(emitter -> {
@@ -236,6 +251,13 @@ public class Polarizer extends AbstractVerticle {
                 });
     }
 
+    /**
+     * Creates an Observable for xunit imports
+     *
+     * @param id
+     * @param req
+     * @return
+     */
     private Observable<XUnitData> makeXImpObservable(UUID id, HttpServerRequest req) {
         return Observable.create(emitter -> {
             try {
@@ -338,7 +360,7 @@ public class Polarizer extends AbstractVerticle {
                             t = new Tuple<>("mapping", id);
                             this.fileUploader(upload, t, path, data, emitter, data::setMapping);
                             break;
-                        case "xargs":
+                        case "tcargs":
                             t = new Tuple<>("tcargs", id);
                             this.argsUploader(upload, t, data, TestCaseConfig.class, data::setConfig, emitter);
                             break;
@@ -353,6 +375,7 @@ public class Polarizer extends AbstractVerticle {
     }
 
     /**
+     * This method will generate the xml file that can be used by the Polarion TestCase Importer
      *
      * @param rc context passed by server
      */
@@ -384,6 +407,145 @@ public class Polarizer extends AbstractVerticle {
                 });
     }
 
+    private static void
+    searchTestCases( String projID
+                   , Testcases tcs
+                   , String name
+                   , String id
+                   , Map<String, Map<String, IdParams>> mapping) {
+        Map<String, IdParams> inner = mapping.getOrDefault(name, null);
+        tcs.getTestcase().forEach(tc -> {
+            // If we've already got this in the map, check if the ID is the same.  If not, we've got duplicates
+            // which could be a problem
+            if (inner != null && inner.containsKey(projID) && !inner.get(projID).id.equals(id)) {
+                String err = "%s with id of %s already exists.  However new ID of %s was created";
+                logger.error(String.format(err, name, inner.get(name).getId(), id));
+                return;
+            }
+            tc.getTestSteps().getTestStep().stream()
+                    .flatMap(ts -> ts.getTestStepColumn().stream())
+                    .map(tsc -> {
+                        List<Parameter> ps = tsc.getParameter();
+                        Map<String, IdParams> mparams;
+                        if (!mapping.containsKey(name))
+                            mparams = new HashMap<>();
+                        else
+                            mparams = mapping.get(name);
+
+                        IdParams idp = mparams.getOrDefault(projID, null);
+                        if (idp == null)
+                            idp = new IdParams();
+
+                        List<String> pnames = ps.stream()
+                            .map(param -> {
+                                String pname = param.getName();
+                                logger.info(String.format("Adding parameter %s to %s", pname, name));
+                                return pname;
+                            })
+                            .collect(Collectors.toList());
+                        idp.setParameters(pnames);
+                        idp.setId(id);
+                        mparams.put(projID, idp);
+                        return mparams;
+                    })
+                    .forEach(mp -> mapping.put(name, mp));
+        });
+    }
+
+    public static MessageHandler
+    testcaseImportHandler( String projID
+                         , String tcXMLPath
+                         , Map<String, Map<String, IdParams>> mapFile
+                         , TestCaseInfo tt) {
+        return (ObjectNode node) -> {
+            MessageResult<DefaultResult> result = new MessageResult<>();
+            if (node == null) {
+                logger.warn("No message was received");
+                result.setStatus(MessageResult.Status.NO_MESSAGE);
+                return result;
+            }
+
+            JsonNode root = node.get("root");
+            if (root.has("status") && root.get("status").textValue().equals("failed")) {
+                result.setStatus(MessageResult.Status.FAILED);
+                result.errorDetails = "status was failed";
+                return result;
+            }
+
+            JAXBReporter rep = new JAXBReporter();
+            Optional<Testcases> isTcs = IJAXBHelper.unmarshaller(Testcases.class, new File(tcXMLPath),
+                    rep.getXSDFromResource(Testcases.class));
+            Testcases tcs = isTcs.orElseThrow(() -> new Error("Could not unmarshall testcases xml file"));
+            JsonNode testcases = root.get("import-testcases");
+            logger.info(testcases.asText());
+            String pf = tt.getPrefix();
+            String sf = tt.getSuffix();
+            testcases.forEach(n -> {
+                // Take off the prefix and suffix from the testcase
+                String name = n.get("name").textValue();
+                name = name.replace(pf, "").replace(sf, "");
+
+                if (!n.get("status").textValue().equals("failed")) {
+                    String id = n.get("id").toString();
+                    if (id.startsWith("\""))
+                        id = id.substring(1);
+                    if (id.endsWith("\""))
+                        id = id.substring(0, id.length() -1);
+                    logger.info(String.format("Testcase id for %s from message response = %s", name, id));
+                    searchTestCases(projID, tcs, name, id, mapFile);
+                }
+                else {
+                    logger.error(String.format("Unable to add %s to mapping file", name));
+                }
+            });
+
+            return result;
+        };
+    }
+
+
+    private Observable<TestCaseImpData> makeTCImpObservable(UUID id, HttpServerRequest req) {
+        return Observable.create(emitter -> {
+            try {
+                req.uploadHandler(upload -> {
+                    String fname = upload.name();
+                    TestCaseImpData data = new TestCaseImpData(id);
+                    Tuple<String, UUID> t;
+                    switch (fname) {
+                        case "testcase":
+                            Path path = FileHelper.makeTempPath("/tmp", "polarion-tc-", ".xml", null);
+                            t = new Tuple<>("testcase", id);
+                            this.fileUploader(upload, t, path, data, emitter, data::setTestcasePath);
+                            break;
+                        case "tcargs":
+                            t = new Tuple<>("tcargs", id);
+                            this.argsUploader(upload, t, data, TestCaseConfig.class, data::setConfig, emitter);
+                            break;
+                        case "mapping":
+                            Path mpath = FileHelper.makeTempPath("/tmp", "polarion-tcmap-", ".xml", null);
+                            t = new Tuple<>("mapping", id);
+                            this.fileUploader(upload, t, mpath, data, emitter, data::setMapping);
+                            break;
+                        default:
+                            break;
+                    }
+                });
+            } catch (Exception e) {
+                emitter.onError(e);
+            }
+        });
+    }
+
+
+    private String getTCImportResult(Optional<MessageResult<ProcessingInfo>> maybe) {
+        String msg = "No Results";
+        if (maybe.isPresent()) {
+            MessageResult<ProcessingInfo> mr = maybe.get();
+            msg = mr.info.getMessage();
+        }
+        return msg;
+    }
+
 
     /**
      *
@@ -394,7 +556,50 @@ public class Polarizer extends AbstractVerticle {
         HttpServerRequest req = rc.request();
 
         UUID id = UUID.randomUUID();
+        Observable<TestCaseImpData> s$ = this.makeTCImpObservable(id, req);
+        s$.scan(TestCaseImpData::merge)
+                .subscribe(data -> {
+                    Boolean d = data.done();
+                    logger.info(String.format("Done is %b", d));
+                    if (d) {
+                        JsonObject jo = new JsonObject();
+                        TestCaseConfig cfg = data.getConfig();
+                        File mappath = new File(cfg.getMapping());
+                        Map<String, Map<String, IdParams>> mapping = FileHelper.loadMapping(mappath);
 
+                        MessageHandler hdlr = testcaseImportHandler(cfg.getProject(),
+                                data.getTestcasePath(), mapping, cfg.getTestcase());
+                        String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
+                        BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
+                        CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
+                        File testXml = FileHelper.makeTempFile("/tmp", "testcase-import", ".xml", null);
+                        String selName = cfg.getTestcase().getSelector().getName();
+                        String selVal = cfg.getTestcase().getSelector().getValue();
+                        String selector = String.format( "%s='%s'", selName, selVal);
+                        String url = cfg.getServers().get("polarion").getUrl() + cfg.getTestcase().getEndpoint();
+
+                        String address = String.format("Consumer.%s.%s", cbl.getClientID(), CIBusListener.TOPIC);
+                        Optional<MessageResult<ProcessingInfo>> on;
+                        logger.info("Sending testcase import request");
+                        on = ImporterRequest.sendImportByTap(cbl, url, cfg.getServers().get("polarion").getUser(),
+                                cfg.getServers().get("polarion").getPassword(), testXml, selector, address);
+                        String msg = this.getTCImportResult(on);
+
+                        jo.put("result", msg);
+                        req.response().end(jo.encode());
+                    }
+                    else {
+                        String missing = String.join(",", data.done.stream()
+                                .filter(e -> !data.completed().contains(e))
+                                .collect(Collectors.toList()));
+                        logger.info(String.format("Still need [%s] to complete upload", missing));
+                    }
+                }, err -> {
+                    logger.error("Failed uploading necessary files");
+                    JsonObject jo = new JsonObject();
+                    jo.put("result", "error");
+                    jo.put("message", "Failed uploading necessary files");
+                });
     }
 
     /**
@@ -440,6 +645,7 @@ public class Polarizer extends AbstractVerticle {
     }
 
     public void start() {
+        Polarizer.test_();
         this.bus = vertx.eventBus();
         port = config().getInteger(CONFIG_HTTP_SERVER_PORT, 9000);
         String host = config().getString(CONFIG_HTTP_SERVER_HOST, "rhsm-cimetrics.usersys.redhat.com");
@@ -467,6 +673,32 @@ public class Polarizer extends AbstractVerticle {
         })
         .rxListen(port, host)
         .subscribe(succ -> logger.info(String.format("Server is now listening on %s:%d", host, this.port)),
-                   err -> logger.info(String.format("Server could not be started %s", err.getMessage())));
+                   err -> logger.info(String.format("Server could not be started: %s", err.getMessage())));
+    }
+
+    public static void test_() {
+        String project = "RedHatEnterpriseLinux7";
+        String xmlpath = "/home/stoner/testcases.xml";
+        String name = "rhsm.cli.tests.BashCompletionTests.testBashCompletionFull";
+        String id = "RHEL7-51406";
+        String mappath = "/home/stoner/mapping-copy.json";
+
+        JAXBReporter rep = new JAXBReporter();
+        Optional<Testcases> isTcs = IJAXBHelper.unmarshaller(Testcases.class, new File(xmlpath),
+                rep.getXSDFromResource(Testcases.class));
+        Testcases tcs = isTcs.orElseThrow(() -> new Error("Could not unmarshall testcases xml file"));
+
+        Map<String, Map<String, IdParams>> mapping = FileHelper.loadMapping(new File(mappath));
+        searchTestCases(project, tcs, name, id, mapping);
+        if (!mapping.containsKey(name))
+            System.err.println("new method not in map");
+        else {
+            IdParams idp = mapping.get(name).get(project);
+            System.out.println(idp.getId());
+        }
+
+        name = "foobar";
+        id = "RHEL7-12345";
+        searchTestCases(project, tcs, name, id, mapping);
     }
 }

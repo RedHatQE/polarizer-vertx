@@ -28,6 +28,7 @@ public class APITestSuite extends AbstractVerticle {
     private TestSuite suite;
     private Logger logger = LogManager.getLogger(APITestSuite.class.getSimpleName());
     private int port;
+    private String host;
     private APITestSuiteConfig sconfig;
     private EventBus bus;
     private MessageConsumer<String> testObserver;
@@ -38,6 +39,7 @@ public class APITestSuite extends AbstractVerticle {
         logger.info(String.format("Bringing up %s Verticle", APITestSuite.class.getSimpleName()));
 
         port = this.config().getInteger("port", 9000);
+        host = this.config().getString("host", "localhost");
         // TODO: Make a service endpoint on Polarizer and have it send msg on Event bus
         this.registerEventBus();
     }
@@ -89,19 +91,27 @@ public class APITestSuite extends AbstractVerticle {
      */
     public void test() {
         String curr = Paths.get(".").toAbsolutePath().normalize().toString();
+        // Report junit files to the current directory/test-output
+        String testOut = curr + "/test-output";
+        File cwd = new File(testOut);
+        if (!cwd.exists() && !cwd.mkdirs()) {
+            this.logger.error(String.format("Can not generate report file: directory %s is missing", curr));
+            return;
+        }
         this.logger.info("================ Starting tests ================");
-        suite.test("basic xunit generate test", this.testXunitGenerate());
-        suite.test("second xunit generate test", this.testXunitGenerate());
-        suite.test("basic xunit import test", this.testXunitImport());
-        suite.test("second xunit import test", this.testXunitImport());
+        //suite.test("basic xunit generate test", this.testXunitGenerate());
+        //suite.test("second xunit generate test", this.testXunitGenerate());
+        //suite.test("basic xunit import test", this.testXunitImport());
+        //suite.test("second xunit import test", this.testXunitImport());
+        //suite.test("tests testcase mapper endpoint", this.testTCMapper());
+        suite.test("tests testcase import endpoint", this.testTestCaseImport());
 
-        ReportOptions consoleReport = new ReportOptions().
-                setTo("console");
+        ReportOptions consoleReport = new ReportOptions()
+                .setTo("console");
 
-        // Report junit files to the current directory
-        ReportOptions junitReport = new ReportOptions().
-                setTo(String.format("file:%s/test-output", curr)).
-                setFormat("junit");
+        ReportOptions junitReport = new ReportOptions()
+                .setTo(String.format("file:%s/test-output", curr))
+                .setFormat("junit");
 
         TestCompletion results = suite.run(this.vertx, new TestOptions()
                 .addReporter(consoleReport)
@@ -118,7 +128,7 @@ public class APITestSuite extends AbstractVerticle {
                 return;
             }
             // Unfortunately, the vertx web client doesn't support multipart file, so lets use unirest
-            Unirest.post(String.format("http://localhost:%d/xunit/import", this.port))
+            Unirest.post(String.format("http://%s:%d/xunit/import", this.host, this.port))
                     .header("accept", "application/json")
                     .field("xunit", new File(xunit))
                     .field("xargs", new File(xargs))
@@ -133,7 +143,7 @@ public class APITestSuite extends AbstractVerticle {
             String xargs = this.sconfig.getXunit().getGenerate().getArgs();
             String mapping = this.sconfig.getXunit().getGenerate().getMapping();
 
-            String url = String.format("http://localhost:%d/xunit/generate", this.port);
+            String url = String.format("http://%s:%d/xunit/generate", this.host, this.port);
             logger.info( String.format("\nMaking request to %s with\nxunit: %s\nxargs: %s\nmapping: %s"
                        , url, xunit, xargs, mapping));
             Unirest.post(url)
@@ -142,6 +152,44 @@ public class APITestSuite extends AbstractVerticle {
                     .field("xargs", new File(xargs))
                     .field("mapping", new File(mapping))
                     .asJsonAsync(this.defaultCallBack("/xunit/generate", ctx));
+            ctx.assertTrue(true);
+        };
+    }
+
+    private Handler<TestContext> testTestCaseImport() {
+        return ctx -> {
+            String testcase = this.sconfig.getTestcase().getImporter().getXml();
+            String tcargs = this.sconfig.getTestcase().getImporter().getArgs();
+            String mapping = this.sconfig.getTestcase().getImporter().getMapping();
+
+            String url = String.format("http://%s:%d/testcase/import", this.host, this.port);
+            logger.info( String.format("\nMaking request to %s with\ntestcase: %s\ntcargs: %s"
+                    , url, testcase, tcargs));
+            Unirest.post(url)
+                    .header("accept", "application/json")
+                    .field("testcase", new File(testcase))
+                    .field("tcargs", new File(tcargs))
+                    .field("mapping", new File(mapping))
+                    .asJsonAsync(this.defaultCallBack("/testcase/import", ctx));
+            ctx.assertTrue(true);
+        };
+    }
+
+    private Handler<TestContext> testTCMapper() {
+        return ctx -> {
+            String focus = this.sconfig.getTestcase().getMapper().getFocus();
+            String tcargs = this.sconfig.getTestcase().getMapper().getArgs();
+            String mapping = this.sconfig.getTestcase().getMapper().getMapping();
+
+            String url = String.format("http://%s:%d/testcase/mapper", this.host, this.port);
+            logger.info( String.format("\nMaking request to %s with\nfocus: %s\ntcargs: %s\nmapping: %s"
+                    , url, focus, tcargs, mapping));
+            Unirest.post(url)
+                    .header("accept", "application/json")
+                    .field("xunit", new File(focus))
+                    .field("xargs", new File(tcargs))
+                    .field("mapping", new File(mapping))
+                    .asJsonAsync(this.defaultCallBack("/testcase/mapper", ctx));
             ctx.assertTrue(true);
         };
     }
