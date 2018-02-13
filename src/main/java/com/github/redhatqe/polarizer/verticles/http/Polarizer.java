@@ -2,7 +2,6 @@ package com.github.redhatqe.polarizer.verticles.http;
 
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.github.redhatqe.polarizer.ImporterRequest;
 import com.github.redhatqe.polarizer.data.ProcessingInfo;
@@ -29,6 +28,7 @@ import com.github.redhatqe.polarizer.verticles.http.data.*;
 import com.github.redhatqe.polarizer.verticles.tests.APITestSuite;
 import io.reactivex.Observable;
 import io.reactivex.ObservableEmitter;
+import io.reactivex.Single;
 import io.reactivex.functions.Consumer;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerOptions;
@@ -39,9 +39,7 @@ import io.vertx.reactivex.core.Future;
 import io.vertx.reactivex.core.WorkerExecutor;
 import io.vertx.reactivex.core.buffer.Buffer;
 import io.vertx.reactivex.core.eventbus.EventBus;
-import io.vertx.reactivex.core.http.HttpServer;
-import io.vertx.reactivex.core.http.HttpServerFileUpload;
-import io.vertx.reactivex.core.http.HttpServerRequest;
+import io.vertx.reactivex.core.http.*;
 import io.vertx.reactivex.ext.web.Router;
 import io.vertx.reactivex.ext.web.RoutingContext;
 import io.vertx.reactivex.ext.web.handler.BodyHandler;
@@ -62,6 +60,7 @@ public class Polarizer extends AbstractVerticle {
     public static final String UPLOAD_DIR = "/tmp";
     private EventBus bus;
     private int port;
+    public Map<String, Single<JsonObject>> workers = new HashMap<>();
 
     /**
      * This method will take the bytes from the upload handler and accumulate them to a Buffer.  Once the completion
@@ -317,10 +316,12 @@ public class Polarizer extends AbstractVerticle {
         s$.scan(XUnitData::merge)
                 .subscribe((XUnitData xu) -> {
                     if (xu.done()) {
+                        logger.info("Creating WorkerExecutor to run XUnitService.request");
                         // Run this code in a Worker Verticle, since this can take a long time.
                         WorkerExecutor executor = vertx.createSharedWorkerExecutor("XUnitService.request");
                         executor.rxExecuteBlocking((Future<JsonObject> fut) -> {
                             try {
+                                logger.info("Calling XUnitService.request");
                                 JsonObject jo = XUnitService.request(xu.getConfig());
                                 fut.complete(jo);
                             } catch (IOException e) {
@@ -336,6 +337,7 @@ public class Polarizer extends AbstractVerticle {
                     String msg = "Error with upload";
                     logger.error(msg);
                     jo.put("status", "failed");
+                    jo.put("errors", msg);
                     req.response().end(jo.encode());
                 });
     }
@@ -356,7 +358,7 @@ public class Polarizer extends AbstractVerticle {
                             this.fileUploader(upload, t, path, data, emitter, data::setJarToCheck);
                             break;
                         case "mapping":
-                            path = FileHelper.makeTempPath("/tmp","/tmp/mapping-", ".json", null);
+                            path = FileHelper.makeTempPath("/tmp","mapping-", ".json", null);
                             t = new Tuple<>("mapping", id);
                             this.fileUploader(upload, t, path, data, emitter, data::setMapping);
                             break;
@@ -375,7 +377,9 @@ public class Polarizer extends AbstractVerticle {
     }
 
     /**
-     * This method will generate the xml file that can be used by the Polarion TestCase Importer
+     * This method will read in the jar file and the mapping file, and determine if a testcase import is needed.
+     *
+     * Will return a new mapping.json file
      *
      * @param rc context passed by server
      */
@@ -468,14 +472,19 @@ public class Polarizer extends AbstractVerticle {
             JsonNode root = node.get("root");
             if (root.has("status") && root.get("status").textValue().equals("failed")) {
                 result.setStatus(MessageResult.Status.FAILED);
-                result.errorDetails = "status was failed";
+                result.setErrorDetails("status was failed");
                 return result;
             }
 
             JAXBReporter rep = new JAXBReporter();
             Optional<Testcases> isTcs = IJAXBHelper.unmarshaller(Testcases.class, new File(tcXMLPath),
                     rep.getXSDFromResource(Testcases.class));
-            Testcases tcs = isTcs.orElseThrow(() -> new Error("Could not unmarshall testcases xml file"));
+            if (!isTcs.isPresent()) {
+                result.setStatus(MessageResult.Status.ERROR);
+                result.setErrorDetails("Could not unmarshall testcases xml file");
+                return result;
+            }
+            Testcases tcs = isTcs.get();
             JsonNode testcases = root.get("import-testcases");
             logger.info(testcases.asText());
             String pf = tt.getPrefix();
@@ -499,6 +508,7 @@ public class Polarizer extends AbstractVerticle {
                 }
             });
 
+            result.setStatus(MessageResult.Status.SUCCESS);
             return result;
         };
     }
@@ -536,16 +546,45 @@ public class Polarizer extends AbstractVerticle {
         });
     }
 
+    class TCImportArgs {
+        public File xml;
+        public String selectorName;
+        public String selectorValue;
+        public String url;
+        public String user;
+        public String pw;
+        public String address;
 
-    private String getTCImportResult(Optional<MessageResult<ProcessingInfo>> maybe) {
-        String msg = "No Results";
-        if (maybe.isPresent()) {
-            MessageResult<ProcessingInfo> mr = maybe.get();
-            msg = mr.info.getMessage();
+        public TCImportArgs(TestCaseConfig cfg, String address) {
+            this.selectorName = cfg.getTestcase().getSelector().getName();
+            this.selectorValue = cfg.getTestcase().getSelector().getValue();
+            this.xml = FileHelper.makeTempFile("/tmp", "testcase-import", ".xml", null);
+            this.url = cfg.getServers().get("polarion").getUrl() + cfg.getTestcase().getEndpoint();
+            this.user = cfg.getServers().get("polarion").getUser();
+            this.pw = cfg.getServers().get("polarion").getPassword();
+            this.address = address;
         }
-        return msg;
+
+        public String selector() {
+            return String.format( "%s='%s'", selectorName, selectorValue);
+        }
     }
 
+    private Single<JsonObject>
+    executeTCImport( WorkerExecutor executor
+                   , TCImportArgs args
+                   , CIBusListener<ProcessingInfo> cbl
+                   , String address
+                   , JsonObject jo) {
+        return executor.rxExecuteBlocking((Future<JsonObject> fut) -> {
+            Optional<MessageResult<ProcessingInfo>> on;
+            on = ImporterRequest.sendImportByTap(cbl, args.url, args.user, args.pw, args.xml,
+                    args.selector(), address);
+            String msg = this.getTCImportResult(on);
+            jo.put("result", msg);
+            fut.complete(jo);
+        });
+    }
 
     /**
      *
@@ -554,6 +593,13 @@ public class Polarizer extends AbstractVerticle {
     private void testcaseImport(RoutingContext rc) {
         logger.info("In testcaseImport");
         HttpServerRequest req = rc.request();
+
+        String connectType = req.getParam("type");
+        boolean doWebsocket = connectType.contains("ws");
+        if (doWebsocket) {
+            ServerWebSocket ws = req.upgrade();
+        }
+
 
         UUID id = UUID.randomUUID();
         Observable<TestCaseImpData> s$ = this.makeTCImpObservable(id, req);
@@ -572,21 +618,31 @@ public class Polarizer extends AbstractVerticle {
                         String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
                         BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
                         CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
-                        File testXml = FileHelper.makeTempFile("/tmp", "testcase-import", ".xml", null);
-                        String selName = cfg.getTestcase().getSelector().getName();
-                        String selVal = cfg.getTestcase().getSelector().getValue();
-                        String selector = String.format( "%s='%s'", selName, selVal);
-                        String url = cfg.getServers().get("polarion").getUrl() + cfg.getTestcase().getEndpoint();
 
                         String address = String.format("Consumer.%s.%s", cbl.getClientID(), CIBusListener.TOPIC);
-                        Optional<MessageResult<ProcessingInfo>> on;
+                        TCImportArgs args = new TCImportArgs(cfg, address);
                         logger.info("Sending testcase import request");
-                        on = ImporterRequest.sendImportByTap(cbl, url, cfg.getServers().get("polarion").getUser(),
-                                cfg.getServers().get("polarion").getPassword(), testXml, selector, address);
-                        String msg = this.getTCImportResult(on);
 
-                        jo.put("result", msg);
-                        req.response().end(jo.encode());
+                        // If we are not doing websocket, this call will basically block for however long it takes
+                        // Polarion to respond.  Ideally, the client should request a websocket which will return
+                        // Something immediately
+                        WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
+                        if (!doWebsocket) {
+                            this.executeTCImport(executor, args, cbl, address, jo)
+                                    .subscribe(item -> {
+                                        req.response().end(item.encode());
+                                    });
+                        }
+                        else {
+                            ServerWebSocket ws = req.upgrade();
+                            jo.put("result", "Waiting for reply from Polarion");
+                            String msg = jo.encode();
+                            if (msg.length() < (1024 * 1024)) {
+                                Buffer buffer = Buffer.buffer(jo.encode());
+                                ws.writeFinalTextFrame(msg);
+                            }
+
+                        }
                     }
                     else {
                         String missing = String.join(",", data.done.stream()
@@ -601,6 +657,26 @@ public class Polarizer extends AbstractVerticle {
                     jo.put("message", "Failed uploading necessary files");
                 });
     }
+
+    private void queueBrowser(RoutingContext rc) {
+        logger.info("In testcaseImport");
+        HttpServerRequest req = rc.request();
+
+        String queueType = req.getParam("queuetype"); // completed or queue
+        String importType = req.getParam("importtype"); // testcase or xunit
+        String jobId = req.getParam("jobid");
+    }
+
+
+    private String getTCImportResult(Optional<MessageResult<ProcessingInfo>> maybe) {
+        String msg = "No Results";
+        if (maybe.isPresent()) {
+            MessageResult<ProcessingInfo> mr = maybe.get();
+            msg = mr.info.getMessage();
+        }
+        return msg;
+    }
+
 
     /**
      * Makes a request to the APITestSuite verticle to run tests
@@ -644,38 +720,6 @@ public class Polarizer extends AbstractVerticle {
                         .setPassword(keypass));
     }
 
-    public void start() {
-        Polarizer.test_();
-        this.bus = vertx.eventBus();
-        port = config().getInteger(CONFIG_HTTP_SERVER_PORT, 9000);
-        String host = config().getString(CONFIG_HTTP_SERVER_HOST, "rhsm-cimetrics.usersys.redhat.com");
-        HttpServerOptions opts = new HttpServerOptions()
-                .setHost(host)
-                .setReusePort(true);
-        HttpServer server = vertx.createHttpServer(opts);  // TODO: pass opts to the method for TLS
-        Router router = Router.router(vertx);
-
-        server.requestHandler(req -> {
-            req.setExpectMultipart(true);
-            router.route("/testcase/mapper").method(HttpMethod.POST).handler(this::testCaseMapper);
-            router.post("/xunit/generate").handler(this::xunitGenerator);
-            router.post("/xunit/import").handler(this::xunitImport);
-            router.post("/testcase/import").handler(this::testcaseImport);
-            router.post("/test").handler(this::test);
-            router.get("/hello").handler(this::hello);
-
-            router.route().handler(BodyHandler.create()
-                    .setBodyLimit(209715200L)                 // Max Jar size is 200MB
-                    .setDeleteUploadedFilesOnEnd(false)       // FIXME: for testing only.  In Prod set to true
-                    .setUploadsDirectory(UPLOAD_DIR));
-
-            router.accept(req);
-        })
-        .rxListen(port, host)
-        .subscribe(succ -> logger.info(String.format("Server is now listening on %s:%d", host, this.port)),
-                   err -> logger.info(String.format("Server could not be started: %s", err.getMessage())));
-    }
-
     public static void test_() {
         String project = "RedHatEnterpriseLinux7";
         String xmlpath = "/home/stoner/testcases.xml";
@@ -700,5 +744,39 @@ public class Polarizer extends AbstractVerticle {
         name = "foobar";
         id = "RHEL7-12345";
         searchTestCases(project, tcs, name, id, mapping);
+    }
+
+    public void start() {
+        Polarizer.test_();
+        this.bus = vertx.eventBus();
+        port = config().getInteger(CONFIG_HTTP_SERVER_PORT, 9000);
+        String host = config().getString(CONFIG_HTTP_SERVER_HOST, "rhsm-cimetrics.usersys.redhat.com");
+        HttpServerOptions opts = new HttpServerOptions()
+                .setMaxWebsocketFrameSize(1024 * 1024)     // 1Mb max
+                .setHost(host)
+                .setReusePort(true);
+        HttpServer server = vertx.createHttpServer(opts);  // TODO: pass opts to the method for TLS
+        Router router = Router.router(vertx);
+
+        server.requestHandler(req -> {
+            req.setExpectMultipart(true);
+            router.route("/testcase/mapper").method(HttpMethod.POST).handler(this::testCaseMapper);
+            router.post("/xunit/generate").handler(this::xunitGenerator);
+            router.post("/xunit/import").handler(this::xunitImport);
+            router.post("/testcase/import/:type").handler(this::testcaseImport);
+            router.post("/test").handler(this::test);
+            router.post("/queue/:importtype/:queuetype/:jobid").handler(this::queueBrowser);
+            router.get("/hello").handler(this::hello);
+
+            router.route().handler(BodyHandler.create()
+                    .setBodyLimit(209715200L)                 // Max Jar size is 200MB
+                    .setDeleteUploadedFilesOnEnd(false)       // FIXME: for testing only.  In Prod set to true
+                    .setUploadsDirectory(UPLOAD_DIR));
+
+            router.accept(req);
+        })
+        .rxListen(port, host)
+        .subscribe(succ -> logger.info(String.format("Server is now listening on %s:%d", host, this.port)),
+                   err -> logger.info(String.format("Server could not be started: %s", err.getMessage())));
     }
 }

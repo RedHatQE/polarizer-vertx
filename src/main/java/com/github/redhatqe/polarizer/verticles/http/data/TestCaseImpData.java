@@ -19,6 +19,15 @@ public class TestCaseImpData extends PolarizerData {
         super(id);
     }
 
+    /**
+     * This is a hacky way of doing a reduction.  The first object (this) is the accumulator, and the arg passed to
+     * merge is the object that will be reduced into the first.
+     *
+     * FIXME: This is really brittle, there has to be a better way to do this
+     *
+     * @param other
+     * @return
+     */
     public TestCaseImpData merge(TestCaseImpData other) {
         if (other.completed != null)
             this.completed.addAll(other.completed);
