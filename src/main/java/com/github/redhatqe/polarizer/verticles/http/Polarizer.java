@@ -2,6 +2,7 @@ package com.github.redhatqe.polarizer.verticles.http;
 
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.github.redhatqe.polarizer.ImporterRequest;
 import com.github.redhatqe.polarizer.data.ProcessingInfo;
@@ -39,7 +40,9 @@ import io.vertx.reactivex.core.Future;
 import io.vertx.reactivex.core.WorkerExecutor;
 import io.vertx.reactivex.core.buffer.Buffer;
 import io.vertx.reactivex.core.eventbus.EventBus;
+import io.vertx.reactivex.core.eventbus.Message;
 import io.vertx.reactivex.core.http.*;
+import io.vertx.reactivex.core.net.SocketAddress;
 import io.vertx.reactivex.ext.web.Router;
 import io.vertx.reactivex.ext.web.RoutingContext;
 import io.vertx.reactivex.ext.web.handler.BodyHandler;
@@ -60,7 +63,8 @@ public class Polarizer extends AbstractVerticle {
     public static final String UPLOAD_DIR = "/tmp";
     private EventBus bus;
     private int port;
-    public Map<String, Single<JsonObject>> workers = new HashMap<>();
+    public Map<String, ServerWebSocket> sockets = new HashMap<>();
+
 
     /**
      * This method will take the bytes from the upload handler and accumulate them to a Buffer.  Once the completion
@@ -596,9 +600,6 @@ public class Polarizer extends AbstractVerticle {
 
         String connectType = req.getParam("type");
         boolean doWebsocket = connectType.contains("ws");
-        if (doWebsocket) {
-            ServerWebSocket ws = req.upgrade();
-        }
 
 
         UUID id = UUID.randomUUID();
@@ -641,7 +642,9 @@ public class Polarizer extends AbstractVerticle {
                                 Buffer buffer = Buffer.buffer(jo.encode());
                                 ws.writeFinalTextFrame(msg);
                             }
-
+                            UMBListenerData umbargs = new UMBListenerData();
+                            umbargs.setAction("start");
+                            
                         }
                     }
                     else {
@@ -677,6 +680,70 @@ public class Polarizer extends AbstractVerticle {
         return msg;
     }
 
+    private Observable<UMBListenerData>
+    makeUMBObservable(ServerWebSocket ws) {
+        Buffer buffer = Buffer.buffer();
+        return Observable.create(emitter -> ws.frameHandler(frame -> {
+            logger.info("Received a frame");
+            if (frame.isText()) {
+                logger.info("Appending text frame to buffer");
+                buffer.appendString(frame.textData());
+            }
+            if (frame.isBinary()) {
+                logger.info("Appending binary frame to buffer");
+                buffer.appendBuffer(frame.binaryData());
+            }
+            if (frame.isFinal()) {
+                logger.info("All data sent from client");
+                UMBListenerData data = null;
+                try {
+                    String body = buffer.toString();
+                    logger.info(String.format("Data:\n%s", body));
+                    data = Serializer.from(UMBListenerData.class, buffer.toString());
+                    logger.info("Deserialized buffer into UMBListenerData object");
+                    emitter.onNext(data);
+                    emitter.onComplete();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    emitter.onError(e);
+                } finally {
+                    buffer.setBuffer(0, Buffer.buffer());
+                }
+            }
+        }));
+    }
+
+    private void umbListener(ServerWebSocket ws) {
+        logger.info("In umbListener");
+        SocketAddress add = ws.remoteAddress();
+
+        Observable<UMBListenerData> u$ = this.makeUMBObservable(ws);
+        u$.subscribe(next -> {
+            next.clientAddress = add.toString();
+            ObjectMapper mapper = new ObjectMapper();
+            String body = mapper.writeValueAsString(next);
+            String action = next.getAction();
+            String msgAddress = next.getBusAddress();
+            String umbAddress = String.format("umb.messages.%s", action);
+            String clientID = String.format("%s-%s", next.getTag(), next.clientAddress);
+            if (!this.sockets.containsKey(clientID))
+                this.sockets.put(clientID, ws);
+
+            // Tell the UMB Verticle to start listening for messages.  It is listening
+            // for requests on "umb.messages.start" request address
+            this.bus.publish(umbAddress, body);
+            // The UMB Verticle will now start sending messages from the UMB
+            // to the event bus on address defined in next.getBusAddress()
+            // TODO: Write an unregister handle that is called when action = stop
+            // This will also close the websocket
+            this.bus.consumer(msgAddress, (Message<String> msg) -> {
+                ws.resume();
+                String item = msg.body();
+                //logger.info(item);
+                ws.writeFinalTextFrame(item);
+            });
+        });
+    }
 
     /**
      * Makes a request to the APITestSuite verticle to run tests
@@ -760,6 +827,12 @@ public class Polarizer extends AbstractVerticle {
 
         server.requestHandler(req -> {
             req.setExpectMultipart(true);
+
+            if (req.path().contains("umb")) {
+                ServerWebSocket ws = req.upgrade();
+                this.umbListener(ws);
+            }
+
             router.route("/testcase/mapper").method(HttpMethod.POST).handler(this::testCaseMapper);
             router.post("/xunit/generate").handler(this::xunitGenerator);
             router.post("/xunit/import").handler(this::xunitImport);
@@ -767,6 +840,7 @@ public class Polarizer extends AbstractVerticle {
             router.post("/test").handler(this::test);
             router.post("/queue/:importtype/:queuetype/:jobid").handler(this::queueBrowser);
             router.get("/hello").handler(this::hello);
+            //router.post("/umb").handler(this::umbListener);
 
             router.route().handler(BodyHandler.create()
                     .setBodyLimit(209715200L)                 // Max Jar size is 200MB

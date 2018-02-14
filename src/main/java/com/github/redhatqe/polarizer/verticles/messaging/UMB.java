@@ -1,6 +1,5 @@
 package com.github.redhatqe.polarizer.verticles.messaging;
 
-import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.github.redhatqe.polarizer.data.ProcessingInfo;
 import com.github.redhatqe.polarizer.messagebus.CIBusListener;
@@ -10,21 +9,17 @@ import com.github.redhatqe.polarizer.messagebus.MessageResult;
 import com.github.redhatqe.polarizer.messagebus.config.BrokerConfig;
 import com.github.redhatqe.polarizer.messagebus.utils.Tuple;
 import com.github.redhatqe.polarizer.reporter.configuration.Serializer;
-import io.reactivex.Observable;
-import io.vertx.core.http.HttpServerOptions;
+import com.github.redhatqe.polarizer.verticles.http.data.UMBListenerData;
+import io.reactivex.disposables.Disposable;
 import io.vertx.core.json.JsonObject;
 import io.vertx.reactivex.core.AbstractVerticle;
 import io.vertx.reactivex.core.eventbus.EventBus;
-import io.vertx.reactivex.core.http.HttpServer;
-import io.vertx.reactivex.core.http.HttpServerRequest;
-import io.vertx.reactivex.core.http.ServerWebSocket;
-import io.vertx.reactivex.ext.web.Router;
-import io.vertx.reactivex.ext.web.RoutingContext;
-import io.vertx.reactivex.ext.web.handler.BodyHandler;
+import io.vertx.reactivex.core.eventbus.Message;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import javax.jms.Connection;
+import javax.jms.JMSException;
 import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
@@ -33,14 +28,11 @@ import java.util.Optional;
 
 public class UMB extends AbstractVerticle {
     private static Logger logger = LogManager.getLogger(UMB.class.getSimpleName());
-    public static final String CONFIG_HTTP_SERVER_PORT = "port";
-    public static final String CONFIG_HTTP_SERVER_HOST = "host";
-    public static final String UPLOAD_DIR = "/tmp";
-    private static Integer clientID = 0;
     private EventBus bus;
-    private int port;
-    public Map<Integer, Tuple<CIBusListener<ProcessingInfo>, Connection>> buses = new HashMap<>();
-    public Map<Integer, ServerWebSocket> sockets = new HashMap<>();
+    public Map<String, Connection> busListeners = new HashMap<>();
+    public Map<String, Disposable> disposables = new HashMap<>();
+    public static final String svcStart = "umb.messages.start";
+    public static final String svcStop = "umb.messages.stop";
 
     public MessageHandler<DefaultResult>
     defaultBusHandler() {
@@ -73,102 +65,102 @@ public class UMB extends AbstractVerticle {
      * @param req
      * @return
      */
-    public Observable<JsonObject>
-    makeUMBListener(HttpServerRequest req, ServerWebSocket ws) {
-        return Observable.create(emitter -> {
-            String address = req.getParam("topic");
-            String selector = req.getParam("selector");
+    public Tuple<Optional<Connection>, Optional<Disposable>>
+    makeUMBListener(UMBListenerData req) {
+        String address = req.getTopic();
+        String selector = req.getSelector();
+        String dest = req.getBusAddress();
+        String remote = req.clientAddress;
 
-            JsonObject jo = new JsonObject();
-            MessageHandler<DefaultResult> hdlr = this.defaultBusHandler();
-            String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
-            BrokerConfig brokerCfg = null;
-            try {
-                brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
-                CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
-                Optional<Connection> isConn = cbl.tapIntoMessageBus(selector, cbl.createListener(cbl.messageParser()), address);
+        Tuple<Optional<Connection>, Optional<Disposable>> maybe =
+                new Tuple<>(Optional.empty(), Optional.empty());
+        JsonObject jo = new JsonObject();
+        MessageHandler<DefaultResult> hdlr = this.defaultBusHandler();
+        String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
+        BrokerConfig brokerCfg = null;
+        try {
+            brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
+            CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
+            Optional<Connection> isConn = cbl.tapIntoMessageBus(selector, cbl.createListener(cbl.messageParser()), address);
 
-                if (isConn.isPresent()) {
-                    Connection conn = isConn.get();
-                    Tuple<CIBusListener<ProcessingInfo>, Connection> t = new Tuple<>(cbl, conn);
-                    if (clientID < 0)
-                        clientID = 0;
-                    clientID++;
-                    this.buses.put(clientID, t);
-                    this.sockets.put(clientID, ws);
-                    jo.put("id", clientID.toString());
-                    jo.put("message", String.format("Listening to %s", address));
-                }
-                else {
-                    jo.put("id", "none");
-                    jo.put("message", String.format("Could not subscribe to %s", address));
-                    ws.close();
-                }
+            String clientId = String.format("%s-%s", req.getTag(), remote);
+            jo.put("id", clientId);
+            if (isConn.isPresent())
+                jo.put("message", String.format("Listening to %s", address));
+            else
+                jo.put("message", String.format("Could not subscribe to %s", address));
 
-                cbl.getNodeSub().subscribe(
-                        next -> {
-                            JsonObject ijo = new JsonObject();
-                            ijo.put("message", next.toString());
-                            //ws.writeFinalTextFrame(jo.encode());
-                            emitter.onNext(ijo);
-                        },
-                        err -> {
-                            String error = "Error getting messages from UMB";
-                            logger.error(error);
-                            JsonObject ejo = new JsonObject();
-                            ejo.put("message", error);
-                            //ws.writeFinalTextFrame(ejo.encode());
-                            emitter.onNext(ejo);
-                        });
-            } catch (IOException e) {
-                e.printStackTrace();
-                jo.put("id", "none");
-                jo.put("message", String.format("Could not get broker configuration from %s", brokerCfgPath));
-                emitter.onError(e);
-                ws.close();
-            }
-            //ws.writeFinalTextFrame(jo.encode());
-            emitter.onNext(jo);
-        });
-    }
+            Disposable disp = cbl.getNodeSub().subscribe(
+                    next -> {
+                        JsonObject ijo = new JsonObject();
+                        ijo.put("id", clientId);
+                        ijo.put("message", next.toString());
+                        this.bus.publish(dest, ijo.encode());
+                    },
+                    err -> {
+                        String error = "Error getting messages from UMB";
+                        logger.error(error);
+                        JsonObject ejo = new JsonObject();
+                        ejo.put("id", clientId);
+                        ejo.put("message", error);
+                        this.bus.publish(dest, ejo.encode());
+                    });
+            maybe.first = isConn;
+            maybe.second = Optional.of(disp);
+        } catch (IOException e) {
+            e.printStackTrace();
+            jo.put("id", "none");
+            jo.put("message", String.format("Could not get broker configuration from %s", brokerCfgPath));
+            this.bus.publish(dest, jo.encode());
+        }
 
-    public void listen(RoutingContext rc) {
-        HttpServerRequest req = rc.request();
-        // TODO: I think this has to be long lived.  We also need a way to close
-        ServerWebSocket ws = req.upgrade();
-
-        Observable<JsonObject> m$ = this.makeUMBListener(req, ws);
-        m$.subscribe((JsonObject next) -> ws.writeFinalTextFrame(next.encode()),
-                err -> {
-                    logger.error("Could not get message");
-                    ws.close();
-                });
+        this.bus.publish(dest,jo.encode());
+        return maybe;
     }
 
     public void start() {
         this.bus = vertx.eventBus();
-        port = config().getInteger(CONFIG_HTTP_SERVER_PORT, 9001);
-        String host = config().getString(CONFIG_HTTP_SERVER_HOST, "rhsm-cimetrics.usersys.redhat.com");
-        HttpServerOptions opts = new HttpServerOptions()
-                .setMaxWebsocketFrameSize(1024 * 1024)     // 1Mb max
-                .setHost(host)
-                .setReusePort(true);
-        HttpServer server = vertx.createHttpServer(opts);  // TODO: pass opts to the method for TLS
-        Router router = Router.router(vertx);
 
-        server.requestHandler(req -> {
-            req.setExpectMultipart(true);
+        // TODO: Need a way unregister any handlers
+        this.bus.consumer(UMB.svcStart, (Message<String> msg) -> {
+            String body = msg.body();
+            try {
+                UMBListenerData data = Serializer.from(UMBListenerData.class, body);
+                Tuple<Optional<Connection>, Optional<Disposable>> ret =
+                        this.makeUMBListener(data);
 
-            router.post("/umb/:topic/:selector").handler(this::listen);
-            router.route().handler(BodyHandler.create()
-                    .setBodyLimit(209715200L)                 // Max Jar size is 200MB
-                    .setDeleteUploadedFilesOnEnd(false)       // FIXME: for testing only.  In Prod set to true
-                    .setUploadsDirectory(UPLOAD_DIR));
+                // TODO: close the connection
+                String clientID = String.format("%s-%s", data.getTag(), data.clientAddress);
+                ret.first.ifPresent(conn -> {
+                    this.busListeners.put(clientID, conn);
+                });
+                ret.second.ifPresent(disp -> {
+                    this.disposables.put(clientID, disp);
+                });
 
-            router.accept(req);
-        })
-        .rxListen(port, host)
-        .subscribe(succ -> logger.info(String.format("Server is now listening on %s:%d", host, this.port)),
-                   err -> logger.info(String.format("Server could not be started %s", err.getMessage())));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        });
+
+        this.bus.consumer(UMB.svcStop, (Message<String> msg) -> {
+            String body = msg.body();
+            try {
+                UMBListenerData data = Serializer.from(UMBListenerData.class, body);
+                String clientID = String.format("%s-%s", data.getTag(), data.clientAddress);
+
+                Disposable disp = this.disposables.get(clientID);
+                if (disp != null)
+                    disp.dispose();
+                Connection conn= this.busListeners.get(clientID);
+                if (conn != null)
+                    conn.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+            } catch (JMSException e) {
+                e.printStackTrace();
+                logger.error("JMS Exception closing connection");
+            }
+        });
     }
 }
