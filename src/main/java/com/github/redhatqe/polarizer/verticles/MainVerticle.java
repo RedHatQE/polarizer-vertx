@@ -47,7 +47,7 @@ public class MainVerticle extends AbstractVerticle {
                     // Start the APITestSuite verticle once the Polarizer verticle is running
                     Single<String> deployed = vertx.rxDeployVerticle(TEST_VERT, tOpts);
                     deployed.subscribe(next -> logger.info("APITestSuite Verticle is now deployed"),
-                            err -> logger.error(err.getMessage()));
+                                       err -> logger.error(err.getMessage()));
                     Single<String> umbvert = vertx.rxDeployVerticle(UMB_VERTICLE);
                     // Start the UMB verticle once Polarizer verticle is running
                     umbvert.subscribe(next -> {
@@ -58,12 +58,14 @@ public class MainVerticle extends AbstractVerticle {
 
                     logger.info("Polarizer was deployed");
 
+
                     /**
                     Single<String> wsclient = vertx.rxDeployVerticle(WebSocketClient.class.getCanonicalName());
                     wsclient.subscribe(n -> {
                         logger.info("Starting ws client");
                     });
-                    */
+                     */
+
             },
             err -> logger.error("Failed to deploy Polarizer\n" + err.getMessage()));
     }

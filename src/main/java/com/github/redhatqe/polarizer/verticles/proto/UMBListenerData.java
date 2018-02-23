@@ -1,4 +1,4 @@
-package com.github.redhatqe.polarizer.verticles.http.data;
+package com.github.redhatqe.polarizer.verticles.proto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -19,6 +19,15 @@ public class UMBListenerData {
 
     public UMBListenerData() {
 
+    }
+
+    public UMBListenerData(String topic, String sel, String bus, String action, String tag, String caddress) {
+        this.topic = topic;
+        this.selector = sel;
+        this.busAddress = bus;
+        this.action = action;
+        this.tag = tag;
+        this.clientAddress = caddress;
     }
 
     public String getTopic() {

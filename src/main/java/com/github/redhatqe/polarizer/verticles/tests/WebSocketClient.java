@@ -2,7 +2,7 @@ package com.github.redhatqe.polarizer.verticles.tests;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.github.redhatqe.polarizer.verticles.http.data.UMBListenerData;
+import com.github.redhatqe.polarizer.verticles.proto.UMBListenerData;
 import io.vertx.reactivex.core.AbstractVerticle;
 import io.vertx.reactivex.core.buffer.Buffer;
 import io.vertx.reactivex.core.http.HttpClient;
@@ -16,12 +16,16 @@ public class WebSocketClient extends AbstractVerticle {
         HttpClient client = vertx.createHttpClient();
         System.out.println("In WebSocketClient verticle");
 
+
+    }
+
+    private void startUMB(HttpClient client) {
         client.websocket(9000, "localhost", "/umb/start", websocket -> {
             UMBListenerData data = new UMBListenerData();
             data.setAction("start");
             data.setTag("rhsmqe");
             data.setBusAddress("rhsmqe.messages");
-            data.setSelector("");
+            data.setSelector("rhsm_qe='testcase_importer'");
             UUID rand = UUID.randomUUID();
             data.setTopic(String.format("Consumer.client-polarize.%s.VirtualTopic.qe.ci.>", rand.toString()));
             ObjectMapper mapper = new ObjectMapper();
@@ -43,6 +47,16 @@ public class WebSocketClient extends AbstractVerticle {
                 //client.close();
             });
             websocket.writeBinaryMessage(Buffer.buffer("Hello world"));
+        });
+    }
+
+    /**
+     * This function will send a fake testcase to update in polarion-devel
+     *
+     */
+    private void startTestCaseImport(HttpClient client) {
+        client.websocket(9000, "localhost", "/testcase/ws/import", websocket -> {
+
         });
     }
 }

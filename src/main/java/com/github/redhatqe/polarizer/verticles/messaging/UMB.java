@@ -9,7 +9,7 @@ import com.github.redhatqe.polarizer.messagebus.MessageResult;
 import com.github.redhatqe.polarizer.messagebus.config.BrokerConfig;
 import com.github.redhatqe.polarizer.messagebus.utils.Tuple;
 import com.github.redhatqe.polarizer.reporter.configuration.Serializer;
-import com.github.redhatqe.polarizer.verticles.http.data.UMBListenerData;
+import com.github.redhatqe.polarizer.verticles.proto.UMBListenerData;
 import io.reactivex.disposables.Disposable;
 import io.vertx.core.json.JsonObject;
 import io.vertx.reactivex.core.AbstractVerticle;
@@ -77,9 +77,8 @@ public class UMB extends AbstractVerticle {
         JsonObject jo = new JsonObject();
         MessageHandler<DefaultResult> hdlr = this.defaultBusHandler();
         String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
-        BrokerConfig brokerCfg = null;
         try {
-            brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
+            BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
             CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
             Optional<Connection> isConn = cbl.tapIntoMessageBus(selector, cbl.createListener(cbl.messageParser()), address);
 
@@ -122,6 +121,7 @@ public class UMB extends AbstractVerticle {
         this.bus = vertx.eventBus();
 
         // TODO: Need a way unregister any handlers
+        // The handler that will start a listener
         this.bus.consumer(UMB.svcStart, (Message<String> msg) -> {
             String body = msg.body();
             try {
