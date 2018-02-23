@@ -59,12 +59,12 @@ public class MainVerticle extends AbstractVerticle {
                     logger.info("Polarizer was deployed");
 
 
-                    /**
+
                     Single<String> wsclient = vertx.rxDeployVerticle(WebSocketClient.class.getCanonicalName());
                     wsclient.subscribe(n -> {
                         logger.info("Starting ws client");
                     });
-                     */
+
 
             },
             err -> logger.error("Failed to deploy Polarizer\n" + err.getMessage()));

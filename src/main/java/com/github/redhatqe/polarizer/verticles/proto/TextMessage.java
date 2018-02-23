@@ -1,7 +1,6 @@
 package com.github.redhatqe.polarizer.verticles.proto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
-import io.vertx.core.json.Json;
 import io.vertx.core.json.JsonObject;
 
 import javax.xml.soap.Text;
@@ -25,6 +24,18 @@ public class TextMessage {
     protected String tag;
     @JsonProperty
     protected Boolean ack;
+
+    public TextMessage() {
+
+    }
+
+    public TextMessage(String op, String type, String data, String tag, Boolean ack) {
+        this.op = op;
+        this.type = type;
+        this.tag = tag;
+        this.data = data;
+        this.ack = ack;
+    }
 
     public JsonObject makeReplyMessage(String reply, Boolean ackNak) {
         JsonObject msg = new JsonObject();

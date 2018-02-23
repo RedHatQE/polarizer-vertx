@@ -18,6 +18,10 @@ public class TestCaseMessage extends TextMessage {
         super();
     }
 
+    public TestCaseMessage(String op, String type, String data, String tag, Boolean ack) {
+        super(op, type, data, tag, ack);
+    }
+
     public static Map<String, String> merge(Map<String, String> acc, TestCaseMessage next) {
         Map<String, String> accumulated = new HashMap<>(acc);
         accumulated.put(next.getType(), next.getData());

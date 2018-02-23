@@ -34,7 +34,6 @@ import io.reactivex.disposables.Disposable;
 import io.reactivex.functions.Consumer;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.core.http.HttpServerOptions;
-import io.vertx.core.json.Json;
 import io.vertx.core.json.JsonObject;
 import io.vertx.core.net.JksOptions;
 import io.vertx.reactivex.core.AbstractVerticle;
@@ -56,6 +55,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.*;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 
@@ -464,7 +464,7 @@ public class Polarizer extends AbstractVerticle {
         });
     }
 
-    public static MessageHandler
+    public static MessageHandler<DefaultResult>
     testcaseImportHandler( String projID
                          , String tcXMLPath
                          , Map<String, Map<String, IdParams>> mapFile
@@ -637,10 +637,11 @@ public class Polarizer extends AbstractVerticle {
                    , String address
                    , JsonObject jo) {
         return executor.rxExecuteBlocking((Future<JsonObject> fut) -> {
-            Optional<MessageResult<ProcessingInfo>> on;
-            on = ImporterRequest.sendImportByTap(cbl, args.url, args.user, args.pw, args.xml,
+            Tuple<Optional<MessageResult<ProcessingInfo>>, Optional<Connection>> on;
+            on = ImporterRequest.sendImport(cbl, args.url, args.user, args.pw, args.xml,
                     args.selector(), address);
-            String msg = this.getTCImportResult(on);
+            // Get the immediate return from the post.  Don't wait for UMB response
+            String msg = this.getTCImportResult(on.first);
             jo.put("result", msg);
             fut.complete(jo);
         });
@@ -672,20 +673,20 @@ public class Polarizer extends AbstractVerticle {
                 jo.put("message", String.format("Could not subscribe to %s", umb.getTopic()));
 
             Disposable disp = cbl.getNodeSub().subscribe(
-                    next -> {
-                        JsonObject ijo = new JsonObject();
-                        ijo.put("id", clientId);
-                        ijo.put("message", next.toString());
-                        this.bus.publish(umb.getBusAddress(), ijo.encode());
-                    },
-                    err -> {
-                        String error = "Error getting messages from UMB";
-                        logger.error(error);
-                        JsonObject ejo = new JsonObject();
-                        ejo.put("id", clientId);
-                        ejo.put("message", error);
-                        this.bus.publish(umb.getBusAddress(), ejo.encode());
-                    });
+                next -> {
+                    JsonObject ijo = new JsonObject();
+                    ijo.put("id", clientId);
+                    ijo.put("message", next.toString());
+                    this.bus.publish(umb.getBusAddress(), ijo.encode());
+                },
+                err -> {
+                    String error = "Error getting messages from UMB";
+                    logger.error(error);
+                    JsonObject ejo = new JsonObject();
+                    ejo.put("id", clientId);
+                    ejo.put("message", error);
+                    this.bus.publish(umb.getBusAddress(), ejo.encode());
+                });
             maybe.first = isConn;
             maybe.second = Optional.of(disp);
         } catch (IOException e) {
@@ -699,78 +700,121 @@ public class Polarizer extends AbstractVerticle {
         return maybe;
     }
 
+    public static void
+    bufferToWebSocket(ServerWebSocket ws, Buffer item, int maxsize) {
+        int end = item.length();
+        if (item.length() < maxsize) {
+            ws.writeFinalBinaryFrame(item);
+        }
+        else {
+            io.vertx.core.buffer.Buffer buff = io.vertx.core.buffer.Buffer.buffer(item.length());
+            item.writeToBuffer(buff);
+            int start = 0;
+            while(buff.length() > maxsize) {
+                if (start == end) {
+                    ws.writeFinalTextFrame(buff.toString());
+                }
+                int len = buff.length() - start;
+                int transmit = len < maxsize ? len : maxsize;
+                byte[] content = new byte[transmit];
+                io.vertx.core.buffer.Buffer c = buff.getBytes(start, transmit, content);
+
+                ws.writeBinaryMessage(Buffer.newInstance(c));
+                start += transmit;
+                buff = buff.getBuffer(start, end);
+            }
+            // The while loop ended, meaning that buff.length() is less than maxsize.  so we can
+            // transmit the final frame if start != end.
+            if (start != end) {
+                ws.writeFinalBinaryFrame(Buffer.newInstance(buff));
+            }
+        }
+    }
+
+    /**
+     * TODO: Figure out how to make this more generic
+     *
+     * This function is a bridge from the CIBusListener, listening to the JMS broker, to a websocket
+     *
+     * @param cbl
+     */
+    public static void
+    jmsToWebSocket( CIBusListener<ProcessingInfo> cbl
+                  , long timeout
+                  , ServerWebSocket ws
+                  , MessageHandler<DefaultResult> hdlr
+                  , int maxsize) {
+        // We're going to listen the CIBusListener's nodeSub, which is an Observable.  When an event comes
+        // in, let the MessageHandler parse the ObjectNode.
+        // TODO: for the timeout operator, if we surpass this, make it call a function to check the queue browser
+        // TODO: Figure out a way to limit the number emitted
+        cbl.getNodeSub()
+            .timeout(timeout, TimeUnit.MILLISECONDS)
+            .map((ObjectNode node) -> {
+                MessageResult<DefaultResult> result = hdlr.handle(node);
+                byte[] content = result.getBody().getBytes("UTF-8");
+                io.vertx.core.buffer.Buffer buff = io.vertx.core.buffer.Buffer.buffer(content);
+                return Buffer.newInstance(buff);
+            })
+            .subscribe((Buffer item) -> {
+                // TODO:
+                bufferToWebSocket(ws, item, maxsize);
+            });
+    }
+
     private void testcaseImport(ServerWebSocket ws) {
         logger.info("In testcaseImport");
 
         Map<String, String> uploaded = new HashMap<>();
         Observable<TestCaseMessage> s$ = this.makeWebsocketObservable(ws, TestCaseMessage.class);
         s$.scan(uploaded, TestCaseMessage::merge)
-                .filter(collected -> TestCaseMessage.done.containsAll(collected.keySet()))
-                .map(TestCaseMessage::createTCImpData)
-                .subscribe(data -> {
-                    JsonObject jo = new JsonObject();
-                    TestCaseConfig cfg = data.getConfig();
-                    File mappath = new File(cfg.getMapping());
-                    Map<String, Map<String, IdParams>> mapping = FileHelper.loadMapping(mappath);
+            .filter(collected -> TestCaseMessage.done.containsAll(collected.keySet()))
+            .map(TestCaseMessage::createTCImpData)
+            .subscribe(data -> {
+                JsonObject jo = new JsonObject();
+                TestCaseConfig cfg = data.getConfig();
+                File mappath = new File(cfg.getMapping());
+                Map<String, Map<String, IdParams>> mapping = FileHelper.loadMapping(mappath);
 
-                    // TODO: Need to figure out a way to pass a handler to the UMB verticle and pass this off
-                    MessageHandler hdlr = testcaseImportHandler(cfg.getProject(),
-                            data.getTestcasePath(), mapping, cfg.getTestcase());
-                    String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
-                    BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
-                    CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
+                // TODO: Need to figure out a way to pass a handler to the UMB verticle and pass this off
+                MessageHandler<DefaultResult> hdlr = testcaseImportHandler(cfg.getProject(),
+                        data.getTestcasePath(), mapping, cfg.getTestcase());
+                String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
+                BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
+                CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
 
 
-                    String address = String.format("Consumer.%s.%s", cbl.getClientID(), CIBusListener.TOPIC);
-                    TCImportArgs args = new TCImportArgs(cfg, address);
-                    logger.info("Sending testcase import request");
+                String address = String.format("Consumer.%s.%s", cbl.getClientID(), CIBusListener.TOPIC);
+                TCImportArgs args = new TCImportArgs(cfg, address);
+                logger.info("Sending testcase import request");
 
-                    // If we are not doing websocket, this call will basically block for however long it takes Polarion
-                    // to respond.  Ideally, the client should request a websocket which will return immediately
-                    int maxsize = 1024 * 1024;
-                    WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
-                    this.executeTCImport(executor, args, cbl, address, jo)
-                            .subscribe((JsonObject item) -> {
-                                int end = item.size();
-                                if (item.size() < maxsize) {
-                                    Buffer buffer = Buffer.newInstance(item.toBuffer());
-                                    ws.writeFinalBinaryFrame(buffer);
-                                }
-                                else {
-                                    io.vertx.core.buffer.Buffer buff = item.toBuffer();
-                                    int start = 0;
-                                    while(buff.length() > maxsize) {
-                                        if (start == end) {
-                                            ws.writeFinalTextFrame(buff.toString());
-                                        }
-                                        int len = buff.length() - start;
-                                        int transmit = len < maxsize ? len : maxsize;
-                                        byte[] content = new byte[transmit];
-                                        io.vertx.core.buffer.Buffer c = buff.getBytes(start, transmit, content);
+                // Run the import request (the post) in a worker verticle in case the http takes a long time
+                // TODO: make a post() using vertx client instead of blocking httpclient
+                WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
+                this.executeTCImport(executor, args, cbl, address, jo)
+                        .subscribe((JsonObject resp) -> {
+                            logger.info(resp.getString("result"));
+                            // TODO: Dig into this json data, and get the JobID
+                        });
 
-                                        ws.writeBinaryMessage(Buffer.newInstance(c));
-                                        start += transmit;
-                                        buff = buff.getBuffer(start, end);
-                                    }
-                                    // The while loop ended, meaning that buff.length() is less than maxsize.  so we can
-                                    // transmit the final frame if start != end.
-                                    if (start != end) {
-                                        ws.writeFinalBinaryFrame(Buffer.newInstance(buff));
-                                    }
-                                }
-                            });
-                    jo.put("result", "Waiting for reply from Polarion");
-                    String msg = jo.encode();
-                    if (msg.length() < maxsize) {
-                        ws.writeFinalTextFrame(msg);
-                    }
+                // Bridge the JMS to the websocket
+                int maxsize = 1024 * 1024;
+                long timeout = brokerCfg.getBrokers().get("ci").getMessageTimeout();
+                jmsToWebSocket(cbl, timeout, ws, hdlr, maxsize);
 
-                }, err -> {
-                    logger.error("Failed uploading necessary files");
-                    JsonObject jo = new JsonObject();
-                    jo.put("result", "error");
-                    jo.put("message", "Failed uploading necessary files");
-                });
+                jo.put("result", "Waiting for reply from Polarion");
+                String msg = jo.encode();
+                if (msg.length() < maxsize) {
+                    ws.writeFinalTextFrame(msg);
+                }
+
+            }, err -> {
+                logger.error("Failed uploading necessary files");
+                JsonObject jo = new JsonObject();
+                jo.put("result", "error");
+                jo.put("message", "Failed uploading necessary files");
+                ws.writeFinalTextFrame(jo.encode());
+            });
     }
 
     private void queueBrowser(RoutingContext rc) {
@@ -925,7 +969,7 @@ public class Polarizer extends AbstractVerticle {
             // NOTE: It seems like you can't do the websocket handlers from within the router.  If you do, you will
             // get a failure in the handler when you try to do a request.upgrade().  So, handle them here where the
             // upgrade request seems to work.
-            if (req.path().contains("umb")) {
+            if (req.path().endsWith("/umb/start")) {
                 ServerWebSocket ws = req.upgrade();
                 this.umbListener(ws);
             }

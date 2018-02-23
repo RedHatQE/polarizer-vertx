@@ -2,6 +2,8 @@ package com.github.redhatqe.polarizer.verticles.tests;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.redhatqe.polarizer.verticles.proto.TestCaseMessage;
+import com.github.redhatqe.polarizer.verticles.proto.TextMessage;
 import com.github.redhatqe.polarizer.verticles.proto.UMBListenerData;
 import io.vertx.reactivex.core.AbstractVerticle;
 import io.vertx.reactivex.core.buffer.Buffer;
@@ -16,7 +18,7 @@ public class WebSocketClient extends AbstractVerticle {
         HttpClient client = vertx.createHttpClient();
         System.out.println("In WebSocketClient verticle");
 
-
+        this.startUMB(client);
     }
 
     private void startUMB(HttpClient client) {
@@ -30,17 +32,21 @@ public class WebSocketClient extends AbstractVerticle {
             data.setTopic(String.format("Consumer.client-polarize.%s.VirtualTopic.qe.ci.>", rand.toString()));
             ObjectMapper mapper = new ObjectMapper();
 
-            String request = null;
+            TextMessage msg = null;
+            String req = null;
             try {
-                request = mapper.writeValueAsString(data);
-                System.out.println(request);
+                String request = mapper.writeValueAsString(data);
+                // Create the message
+                msg = new TextMessage("umb", "request", request, "rhsm-qe", false);
+                req = mapper.writeValueAsString(msg);
+                System.out.println(req);
             } catch (JsonProcessingException e) {
                 e.printStackTrace();
             }
 
-            if (request != null) {
+            if (req != null) {
                 System.out.println("Sending json request");
-                websocket.writeFinalTextFrame(request);
+                websocket.writeFinalTextFrame(req);
             }
             websocket.handler(d -> {
                 System.out.println("Received data " + d.toString("ISO-8859-1"));
