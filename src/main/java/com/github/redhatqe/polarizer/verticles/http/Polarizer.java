@@ -583,18 +583,18 @@ public class Polarizer extends AbstractVerticle {
             }
             if (frame.isFinal()) {
                 logger.info("All data sent from client");
-                T data;
+                T request;
                 try {
                     String body = buffer.toString();
                     logger.info(String.format("Data:\n%s", body));
-                    data = Serializer.from(cls, buffer.toString());
-                    if (data.getAck()) {
+                    request = Serializer.from(cls, buffer.toString());
+                    if (request.getAck()) {
                         // TODO: Need to check by Op code if the reply requires a nak
-                        JsonObject reply = data.makeReplyMessage("Received message", false);
+                        JsonObject reply = request.makeReplyMessage("Received message", false);
                         ws.writeFinalTextFrame(reply.encode());
                     }
                     logger.info(String.format("Deserialized buffer into %s object", cls.getCanonicalName()));
-                    emitter.onNext(data);
+                    emitter.onNext(request);
                     emitter.onComplete();
                 } catch (IOException e) {
                     e.printStackTrace();

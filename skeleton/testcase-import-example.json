@@ -1,0 +1,13 @@
+{
+  "op": "testcase-import-ws",
+  "type": "na",
+  "tag": "some-unique-id",
+  "ack": true,
+  "data": {
+    "": "Consumer.client-polarize.1234-5678-9897-2456.VirtualTopic.qe.ci.>",
+    "action": "start",
+    "tag": "rhsm-qe",
+    "selector": "rhsm_qe='testcase_importer'",
+    "bus-address": "rhsmqe.messages"
+  }
+}
