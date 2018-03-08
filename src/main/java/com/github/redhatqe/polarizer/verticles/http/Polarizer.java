@@ -212,7 +212,7 @@ public class Polarizer extends AbstractVerticle {
      * This method takes a non-polarion compliant xunit file, a polarizer-xunit.json config file, and the mapping.json
      * file, and returns a compliant xunit file ready to be sent to polarion.
      *
-     * @param rc
+     * @param rc RoutingContext from vertx
      */
     private void xunitGenerator(RoutingContext rc) {
         logger.info("In xunitGenerator");
@@ -260,9 +260,9 @@ public class Polarizer extends AbstractVerticle {
     /**
      * Creates an Observable for xunit imports
      *
-     * @param id
-     * @param req
-     * @return
+     * @param id UUID to identify this item
+     * @param req HttpServerRequest from vertx
+     * @return Observable stream of XUnitData
      */
     private Observable<XUnitData> makeXImpObservable(UUID id, HttpServerRequest req) {
         return Observable.create(emitter -> {
@@ -464,8 +464,8 @@ public class Polarizer extends AbstractVerticle {
         });
     }
 
-    public static MessageHandler<DefaultResult>
-    testcaseImportHandler( String projID
+    private static MessageHandler<DefaultResult>
+    testcaseImportHandler(String projID
                          , String tcXMLPath
                          , Map<String, Map<String, IdParams>> mapFile
                          , TestCaseInfo tt) {
@@ -525,9 +525,9 @@ public class Polarizer extends AbstractVerticle {
     /**
      * This function is used with regular http(s) /testcase/import.  For websockets, it will use another method
      *
-     * @param id
-     * @param req
-     * @return
+     * @param id UUID to identify this emitted item
+     * @param req HttpServerRequest from vertx
+     * @return Observable stream of TestCaseImpData
      */
     private Observable<TestCaseImpData>
     makeTCImpObservable(UUID id, HttpServerRequest req) {
@@ -565,8 +565,10 @@ public class Polarizer extends AbstractVerticle {
     /**
      * This method is used for gathering data from a websocket transmission
      *
-     * @param ws
-     * @return
+     * @param ws ServerWebSocket from vertx
+     * @param cls class to serialize data into
+     * @param <T> type of class to serialize
+     * @return Observable of type T
      */
     private <T extends TextMessage> Observable<T>
     makeWebsocketObservable(ServerWebSocket ws, Class<T> cls) {
@@ -607,15 +609,15 @@ public class Polarizer extends AbstractVerticle {
     }
 
     class TCImportArgs {
-        public File xml;
-        public String selectorName;
-        public String selectorValue;
-        public String url;
-        public String user;
-        public String pw;
-        public String address;
+        File xml;
+        String selectorName;
+        String selectorValue;
+        String url;
+        String user;
+        String pw;
+        String address;
 
-        public TCImportArgs(TestCaseConfig cfg, String address) {
+        TCImportArgs(TestCaseConfig cfg, String address) {
             this.selectorName = cfg.getTestcase().getSelector().getName();
             this.selectorValue = cfg.getTestcase().getSelector().getValue();
             this.xml = FileHelper.makeTempFile("/tmp", "testcase-import", ".xml", null);
@@ -625,7 +627,7 @@ public class Polarizer extends AbstractVerticle {
             this.address = address;
         }
 
-        public String selector() {
+        String selector() {
             return String.format( "%s='%s'", selectorName, selectorValue);
         }
     }
@@ -649,9 +651,10 @@ public class Polarizer extends AbstractVerticle {
 
     /**
      * Request a listener
-     * @param hdlr
-     * @param umb
-     * @return
+     *
+     * @param hdlr handler to parse JMS messaae
+     * @param umb data coming from umb
+     * @return tuple of optional Connectio and Disposables
      */
     public Tuple<Optional<Connection>, Optional<Disposable>>
     makeTestCaseListener(MessageHandler hdlr, UMBListenerData umb) {
@@ -700,7 +703,7 @@ public class Polarizer extends AbstractVerticle {
         return maybe;
     }
 
-    public static void
+    private static void
     bufferToWebSocket(ServerWebSocket ws, Buffer item, int maxsize) {
         int end = item.length();
         if (item.length() < maxsize) {
@@ -735,10 +738,13 @@ public class Polarizer extends AbstractVerticle {
      * TODO: Figure out how to make this more generic
      *
      * This function is a bridge from the CIBusListener, listening to the JMS broker, to a websocket
-     *
-     * @param cbl
+     * @param cbl CIBusListener
+     * @param timeout timeout in milliseconds
+     * @param ws ServerWebSocket from vertx
+     * @param hdlr MessageHandler to parse jMS message
+     * @param maxsize number of messages to consume
      */
-    public static void
+    private static void
     jmsToWebSocket( CIBusListener<ProcessingInfo> cbl
                   , long timeout
                   , ServerWebSocket ws
@@ -757,7 +763,6 @@ public class Polarizer extends AbstractVerticle {
                 return Buffer.newInstance(buff);
             })
             .subscribe((Buffer item) -> {
-                // TODO:
                 bufferToWebSocket(ws, item, maxsize);
             });
     }
@@ -911,7 +916,7 @@ public class Polarizer extends AbstractVerticle {
                         .setPassword(keypass));
     }
 
-    public static void test_() {
+    private static void test_() {
         String project = "RedHatEnterpriseLinux7";
         String xmlpath = "/home/stoner/testcases.xml";
         String name = "rhsm.cli.tests.BashCompletionTests.testBashCompletionFull";
