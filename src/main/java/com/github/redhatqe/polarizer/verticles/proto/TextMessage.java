@@ -3,7 +3,6 @@ package com.github.redhatqe.polarizer.verticles.proto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.vertx.core.json.JsonObject;
 
-import javax.xml.soap.Text;
 
 
 /**

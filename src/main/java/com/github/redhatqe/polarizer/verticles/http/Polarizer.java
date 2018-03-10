@@ -1,6 +1,7 @@
 package com.github.redhatqe.polarizer.verticles.http;
 
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -22,6 +23,7 @@ import com.github.redhatqe.polarizer.reporter.jaxb.IJAXBHelper;
 import com.github.redhatqe.polarizer.reporter.jaxb.JAXBReporter;
 import com.github.redhatqe.polarizer.reporter.utils.Tuple;
 import com.github.redhatqe.polarizer.utils.FileHelper;
+import com.github.redhatqe.polarizer.verticles.messaging.UMB;
 import com.github.redhatqe.polarizer.verticles.proto.TestCaseMessage;
 import com.github.redhatqe.polarizer.verticles.proto.TextMessage;
 import com.github.redhatqe.polarizer.verticles.proto.UMBListenerData;
@@ -607,15 +609,15 @@ public class Polarizer extends AbstractVerticle {
     }
 
     class TCImportArgs {
-        public File xml;
-        public String selectorName;
-        public String selectorValue;
-        public String url;
-        public String user;
-        public String pw;
-        public String address;
+        File xml;
+        String selectorName;
+        String selectorValue;
+        String url;
+        String user;
+        String pw;
+        String address;
 
-        public TCImportArgs(TestCaseConfig cfg, String address) {
+        TCImportArgs(TestCaseConfig cfg, String address) {
             this.selectorName = cfg.getTestcase().getSelector().getName();
             this.selectorValue = cfg.getTestcase().getSelector().getValue();
             this.xml = FileHelper.makeTempFile("/tmp", "testcase-import", ".xml", null);
@@ -625,7 +627,7 @@ public class Polarizer extends AbstractVerticle {
             this.address = address;
         }
 
-        public String selector() {
+        String selector() {
             return String.format( "%s='%s'", selectorName, selectorValue);
         }
     }
@@ -638,8 +640,16 @@ public class Polarizer extends AbstractVerticle {
                    , JsonObject jo) {
         return executor.rxExecuteBlocking((Future<JsonObject> fut) -> {
             Tuple<Optional<MessageResult<ProcessingInfo>>, Optional<Connection>> on;
-            on = ImporterRequest.sendImport(cbl, args.url, args.user, args.pw, args.xml,
-                    args.selector(), address);
+            List<Tuple<String, File>> files = new ArrayList<>();
+            files.add(new Tuple<>("file", args.xml));
+            try {
+                logger.info("================================");
+                logger.info(FileHelper.readFile(args.xml.toString()));
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+            on = ImporterRequest.sendImport(cbl, args.url, args.user, args.pw, files, args.selector(), address);
+
             // Get the immediate return from the post.  Don't wait for UMB response
             String msg = this.getTCImportResult(on.first);
             jo.put("result", msg);
@@ -649,6 +659,7 @@ public class Polarizer extends AbstractVerticle {
 
     /**
      * Request a listener
+     *
      * @param hdlr
      * @param umb
      * @return
@@ -765,15 +776,12 @@ public class Polarizer extends AbstractVerticle {
     private void testcaseImport(ServerWebSocket ws) {
         logger.info("In testcaseImport");
 
-        Map<String, String> uploaded = new HashMap<>();
         Observable<TestCaseMessage> s$ = this.makeWebsocketObservable(ws, TestCaseMessage.class);
-        s$.scan(uploaded, TestCaseMessage::merge)
-            .filter(collected -> TestCaseMessage.done.containsAll(collected.keySet()))
-            .map(TestCaseMessage::createTCImpData)
+        s$.map(TestCaseMessage::createTCImpData)
             .subscribe(data -> {
                 JsonObject jo = new JsonObject();
                 TestCaseConfig cfg = data.getConfig();
-                File mappath = new File(cfg.getMapping());
+                File mappath = new File(data.getMapping());
                 Map<String, Map<String, IdParams>> mapping = FileHelper.loadMapping(mappath);
 
                 // TODO: Need to figure out a way to pass a handler to the UMB verticle and pass this off
@@ -782,7 +790,6 @@ public class Polarizer extends AbstractVerticle {
                 String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
                 BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
                 CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
-
 
                 String address = String.format("Consumer.%s.%s", cbl.getClientID(), CIBusListener.TOPIC);
                 TCImportArgs args = new TCImportArgs(cfg, address);
@@ -831,7 +838,8 @@ public class Polarizer extends AbstractVerticle {
         String msg = "No Results";
         if (maybe.isPresent()) {
             MessageResult<ProcessingInfo> mr = maybe.get();
-            msg = mr.info.getMessage();
+            if (mr.info != null)
+                msg = mr.info.getMessage();
         }
         return msg;
     }
@@ -850,8 +858,20 @@ public class Polarizer extends AbstractVerticle {
             String msgAddress = next.getBusAddress();
             String umbAddress = String.format("umb.messages.%s", action);
             String clientID = String.format("%s-%s", next.getTag(), next.clientAddress);
+
             if (!this.sockets.containsKey(clientID))
                 this.sockets.put(clientID, ws);
+
+            // For closing the UMB listener
+            next.setAction(UMB.svcStop);
+            String closeRequest = mapper.writeValueAsString(next);
+            ws.closeHandler(hdlr -> {
+                logger.info("==========================");
+                logger.info(String.format("Closing UMB websocket brridge for %s\n%s", clientID, closeRequest));
+                logger.info("==========================");
+                this.sockets.remove(clientID);
+                this.bus.publish(umbAddress, closeRequest);
+            });
 
             // Tell the UMB Verticle to start listening for messages.  It is listening
             // for requests on "umb.messages.start" request address
@@ -860,11 +880,19 @@ public class Polarizer extends AbstractVerticle {
             // to the event bus on address defined in next.getBusAddress()
             // TODO: Write an unregister handle that is called when action = stop
             // This will also close the websocket
+            // FIXME:  Check if the length of the message is greater than the frame length, otherwise we will
+            // get an exception
             this.bus.consumer(msgAddress, (Message<String> msg) -> {
+                if (!this.sockets.containsKey(clientID))
+                    return;
                 ws.resume();
                 String item = msg.body();
-                //logger.info(item);
-                ws.writeFinalTextFrame(item);
+                try {
+                    ws.writeFinalTextFrame(item);
+                }
+                catch (IllegalStateException ise) {
+                    logger.error(ise.getMessage());
+                }
             });
         });
     }

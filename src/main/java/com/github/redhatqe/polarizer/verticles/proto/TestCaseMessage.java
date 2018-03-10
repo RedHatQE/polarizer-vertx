@@ -3,6 +3,7 @@ package com.github.redhatqe.polarizer.verticles.proto;
 import com.github.redhatqe.polarizer.reporter.configuration.Serializer;
 import com.github.redhatqe.polarizer.reporter.configuration.data.TestCaseConfig;
 import com.github.redhatqe.polarizer.utils.FileHelper;
+import com.github.redhatqe.polarizer.verticles.http.data.TestCaseDataFromWS;
 import com.github.redhatqe.polarizer.verticles.http.data.TestCaseImpData;
 
 import java.io.IOException;
@@ -43,6 +44,29 @@ public class TestCaseMessage extends TextMessage {
 
         TestCaseConfig cfg = Serializer.from(TestCaseConfig.class, coll.get("tcargs"));
         data.setConfig(cfg);
+
+        return data;
+    }
+
+    public static TestCaseImpData createTCImpData(TestCaseMessage tcm) throws IOException {
+        UUID id = UUID.randomUUID();
+        TestCaseImpData data = new TestCaseImpData(id);
+        String rawData = tcm.getData();
+        TestCaseDataFromWS tcd = Serializer.from(TestCaseDataFromWS.class, rawData);
+
+        Path path = FileHelper.makeTempPath("/tmp", "polarion-tc-", ".xml", null);
+        FileHelper.writeFile(path, tcd.getTestcase());
+        data.setTestcasePath(path.toString());
+
+        Path mpath = FileHelper.makeTempPath("/tmp", "polarion-tcmap-", ".xml", null);
+        FileHelper.writeFile(mpath, tcd.getMapping());
+        data.setMapping(mpath.toString());
+
+        TestCaseConfig cfg = Serializer.from(TestCaseConfig.class, tcd.getTcargs());
+        cfg.setMapping(mpath.toString());
+        data.setConfig(cfg);
+
+        data.setCompleted(data.done);
 
         return data;
     }
