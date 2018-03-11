@@ -12,6 +12,7 @@ import io.vertx.ext.unit.TestOptions;
 import io.vertx.ext.unit.report.ReportOptions;
 import io.vertx.reactivex.core.AbstractVerticle;
 import io.vertx.reactivex.core.eventbus.EventBus;
+import io.vertx.reactivex.core.eventbus.Message;
 import io.vertx.reactivex.core.eventbus.MessageConsumer;
 import io.vertx.reactivex.ext.unit.TestCompletion;
 import io.vertx.reactivex.ext.unit.TestContext;
@@ -42,18 +43,22 @@ public class APITestSuite extends AbstractVerticle {
         host = this.config().getString("host", "localhost");
         // TODO: Make a service endpoint on Polarizer and have it send msg on Event bus
         this.registerEventBus();
+        this.bus.consumer("APITestSuite", (Message<String> msg) -> {
+            logger.info("In APITestSuite, got message");
+        });
     }
 
     private void registerEventBus() {
         String address = APITestSuite.class.getCanonicalName();
         logger.info(String.format("Registering %s on event bus", address));
-        this.testObserver = this.bus.consumer(address);
-        this.testObserver.handler(msg -> {
+        this.bus.consumer("APITestSuite", (Message<String> msg) -> {
             String content = msg.body();
             try {
                 this.sconfig = Serializer.from(APITestSuiteConfig.class, content);
-                if (sconfig.validate())
+                if (sconfig.validate()) {
+                    logger.info("Launching tests");
                     this.test();
+                }
                 else
                     logger.error("Some of the files in the test configuration do not exist");
             } catch (IOException e) {
@@ -101,10 +106,10 @@ public class APITestSuite extends AbstractVerticle {
         this.logger.info("================ Starting tests ================");
         //suite.test("basic xunit generate test", this.testXunitGenerate());
         //suite.test("second xunit generate test", this.testXunitGenerate());
-        //suite.test("basic xunit import test", this.testXunitImport());
+        suite.test("basic xunit import test", this.testXunitImport());
         //suite.test("second xunit import test", this.testXunitImport());
         //suite.test("tests testcase mapper endpoint", this.testTCMapper());
-        suite.test("tests testcase import endpoint", this.testTestCaseImport());
+        //suite.test("tests testcase import endpoint", this.testTestCaseImport());
 
         ReportOptions consoleReport = new ReportOptions()
                 .setTo("console");

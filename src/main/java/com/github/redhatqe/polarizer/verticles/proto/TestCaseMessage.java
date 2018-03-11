@@ -62,10 +62,12 @@ public class TestCaseMessage extends TextMessage {
         FileHelper.writeFile(mpath, tcd.getMapping());
         data.setMapping(mpath.toString());
 
+        // It is actually the TestCaseConfig that will be used by TestCase import functionality
         TestCaseConfig cfg = Serializer.from(TestCaseConfig.class, tcd.getTcargs());
         cfg.setMapping(mpath.toString());
-        data.setConfig(cfg);
+        cfg.setCurrentTCXml(path.toString());
 
+        data.setConfig(cfg);
         data.setCompleted(data.done);
 
         return data;

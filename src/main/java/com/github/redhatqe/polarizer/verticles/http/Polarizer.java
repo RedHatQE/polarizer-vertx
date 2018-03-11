@@ -1,18 +1,17 @@
 package com.github.redhatqe.polarizer.verticles.http;
 
-
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.github.redhatqe.polarizer.ImporterRequest;
-import com.github.redhatqe.polarizer.data.ProcessingInfo;
 import com.github.redhatqe.polarizer.importer.XUnitService;
 import com.github.redhatqe.polarizer.messagebus.*;
+import com.github.redhatqe.polarizer.messagebus.config.Broker;
 import com.github.redhatqe.polarizer.messagebus.config.BrokerConfig;
 import com.github.redhatqe.polarizer.reflector.MainReflector;
 import com.github.redhatqe.polarizer.reporter.IdParams;
 import com.github.redhatqe.polarizer.reporter.XUnitReporter;
+import com.github.redhatqe.polarizer.reporter.configuration.Selector;
 import com.github.redhatqe.polarizer.reporter.configuration.Serializer;
 import com.github.redhatqe.polarizer.reporter.configuration.TestCaseInfo;
 import com.github.redhatqe.polarizer.reporter.configuration.data.TestCaseConfig;
@@ -23,6 +22,7 @@ import com.github.redhatqe.polarizer.reporter.jaxb.IJAXBHelper;
 import com.github.redhatqe.polarizer.reporter.jaxb.JAXBReporter;
 import com.github.redhatqe.polarizer.reporter.utils.Tuple;
 import com.github.redhatqe.polarizer.utils.FileHelper;
+import com.github.redhatqe.polarizer.utils.Tuple3;
 import com.github.redhatqe.polarizer.verticles.messaging.UMB;
 import com.github.redhatqe.polarizer.verticles.proto.TestCaseMessage;
 import com.github.redhatqe.polarizer.verticles.proto.TextMessage;
@@ -65,6 +65,7 @@ public class Polarizer extends AbstractVerticle {
     private static Logger logger = LogManager.getLogger(Polarizer.class.getSimpleName());
     public static final String CONFIG_HTTP_SERVER_PORT = "port";
     public static final String CONFIG_HTTP_SERVER_HOST = "host";
+    public static final String TCIMPORT_BUS = "testcase.import";
     public static final String UPLOAD_DIR = "/tmp";
     private EventBus bus;
     private int port;
@@ -339,6 +340,8 @@ public class Polarizer extends AbstractVerticle {
                             }
                         }).subscribe(item -> {
                             req.response().end(item.encode());
+                        }, err -> {
+                            logger.error(err.getMessage());
                         });
                     }
                 }, err -> {
@@ -473,7 +476,8 @@ public class Polarizer extends AbstractVerticle {
                          , TestCaseInfo tt) {
         return (ObjectNode node) -> {
             MessageResult<DefaultResult> result = new MessageResult<>();
-            if (node == null) {
+            result.setBody(node.toString());
+            if (node.toString().equals("")) {
                 logger.warn("No message was received");
                 result.setStatus(MessageResult.Status.NO_MESSAGE);
                 return result;
@@ -564,6 +568,60 @@ public class Polarizer extends AbstractVerticle {
         });
     }
 
+
+    private void oldTestCaseImport(RoutingContext ctx) {
+        UUID id = UUID.randomUUID();
+        HttpServerRequest req = ctx.request();
+
+        Observable<TestCaseImpData> s$ = this.makeTCImpObservable(id, req);
+        s$.scan(TestCaseImpData::merge)
+            .subscribe(data -> {
+                Boolean d = data.done();
+                logger.info(String.format("Done is %b", d));
+                if (d) {
+                    JsonObject jo = new JsonObject();
+                    TestCaseConfig cfg = data.getConfig();
+                    File mappath = new File(cfg.getMapping());
+                    Map<String, Map<String, IdParams>> mapping = FileHelper.loadMapping(mappath);
+
+                    MessageHandler<DefaultResult> hdlr = testcaseImportHandler(cfg.getProject(),
+                            data.getTestcasePath(), mapping, cfg.getTestcase());
+                    String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
+                    BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
+                    CIBusListener<DefaultResult> cbl = new CIBusListener<>(hdlr, brokerCfg);
+
+                    File testXml = FileHelper.makeTempFile("/tmp", "testcase-import", ".xml", null);
+                    String selName = cfg.getTestcase().getSelector().getName();
+                    String selVal = cfg.getTestcase().getSelector().getValue();
+                    String selector = String.format( "%s='%s'", selName, selVal);
+                    String url = cfg.getServers().get("polarion").getUrl() + cfg.getTestcase().getEndpoint();
+                    String address = String.format("Consumer.%s.%s", cbl.getClientID(), CIBusListener.TOPIC);
+
+                    Optional<MessageResult<DefaultResult>> on;
+                    logger.info("Sending testcase import request");
+                    on = ImporterRequest.sendImportByTap(cbl, url, cfg.getServers().get("polarion").getUser(),
+                            cfg.getServers().get("polarion").getPassword(), testXml, selector, address);
+                    String msg = getTCImportResult(on);
+
+
+                    jo.put("result", msg);
+                    req.response().end(jo.encode());
+                }
+                else {
+                    String missing = String.join(",", data.done.stream()
+                        .filter(e -> !data.completed().contains(e))
+                        .collect(Collectors.toList()));
+                    logger.info(String.format("Still need [%s] to complete upload", missing));
+                }
+            }, err -> {
+                logger.error("Failed uploading necessary files");
+                JsonObject jo = new JsonObject();
+                jo.put("result", "error");
+                jo.put("message", "Failed uploading necessary files");
+            });
+    }
+
+
     /**
      * This method is used for gathering data from a websocket transmission
      *
@@ -620,7 +678,7 @@ public class Polarizer extends AbstractVerticle {
         TCImportArgs(TestCaseConfig cfg, String address) {
             this.selectorName = cfg.getTestcase().getSelector().getName();
             this.selectorValue = cfg.getTestcase().getSelector().getValue();
-            this.xml = FileHelper.makeTempFile("/tmp", "testcase-import", ".xml", null);
+            this.xml = new File(cfg.getCurrentTCXml());
             this.url = cfg.getServers().get("polarion").getUrl() + cfg.getTestcase().getEndpoint();
             this.user = cfg.getServers().get("polarion").getUser();
             this.pw = cfg.getServers().get("polarion").getPassword();
@@ -635,23 +693,17 @@ public class Polarizer extends AbstractVerticle {
     private Single<JsonObject>
     executeTCImport( WorkerExecutor executor
                    , TCImportArgs args
-                   , CIBusListener<ProcessingInfo> cbl
+                   , CIBusListener<DefaultResult> cbl
                    , String address
                    , JsonObject jo) {
         return executor.rxExecuteBlocking((Future<JsonObject> fut) -> {
-            Tuple<Optional<MessageResult<ProcessingInfo>>, Optional<Connection>> on;
+            Optional<MessageResult<DefaultResult>> on;
             List<Tuple<String, File>> files = new ArrayList<>();
             files.add(new Tuple<>("file", args.xml));
-            try {
-                logger.info("================================");
-                logger.info(FileHelper.readFile(args.xml.toString()));
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
             on = ImporterRequest.sendImport(cbl, args.url, args.user, args.pw, files, args.selector(), address);
 
             // Get the immediate return from the post.  Don't wait for UMB response
-            String msg = this.getTCImportResult(on.first);
+            String msg = this.getTCImportResult(on);
             jo.put("result", msg);
             fut.complete(jo);
         });
@@ -664,16 +716,20 @@ public class Polarizer extends AbstractVerticle {
      * @param umb
      * @return
      */
-    public Tuple<Optional<Connection>, Optional<Disposable>>
-    makeTestCaseListener(MessageHandler hdlr, UMBListenerData umb) {
-        Tuple<Optional<Connection>, Optional<Disposable>> maybe =
-                new Tuple<>(Optional.empty(), Optional.empty());
+    public Tuple3<CIBusListener<DefaultResult>
+                 ,Optional<Connection>
+                 , Optional<Disposable>>
+    makeTestCaseListener( MessageHandler<DefaultResult> hdlr
+                        , UMBListenerData umb) {
+        Tuple3<CIBusListener<DefaultResult>, Optional<Connection>, Optional<Disposable>> maybe = new Tuple3<>();
+        maybe.second = Optional.empty();
+        maybe.third = Optional.empty();
         JsonObject jo = new JsonObject();
 
         String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
         try {
             BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
-            CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
+            CIBusListener<DefaultResult> cbl = new CIBusListener<>(hdlr, brokerCfg);
             Optional<Connection> isConn = cbl.tapIntoMessageBus(umb.getSelector(), cbl.createListener(cbl.messageParser()), umb.getTopic());
 
             String clientId = String.format("%s-%s", umb.getTag(), umb.clientAddress);
@@ -683,14 +739,26 @@ public class Polarizer extends AbstractVerticle {
             else
                 jo.put("message", String.format("Could not subscribe to %s", umb.getTopic()));
 
-            Disposable disp = cbl.getNodeSub().subscribe(
-                next -> {
+            Broker brk = brokerCfg.getBrokers().get("ci");
+            Long timeout = 300000L;
+            long msgCount = 1L;
+            if (brk != null) {
+                timeout = brk.getMessageTimeout();
+                msgCount = Integer.toUnsignedLong(brk.getMessageMax());
+            }
+
+            // As the MessageHandler gets messages from the Message Bus, it will pass through the nodeSub.  This will
+            // call the hdlr.handle() which will transform the ObjectNode into a DefaultResult.  This DefaultResult
+            // object is then forwarded to the cbl.resultSubject.  So each time this happens, subscribe
+            Disposable disp = cbl.getResultSubject()
+                .timeout(timeout, TimeUnit.MILLISECONDS)
+                .take(msgCount)
+                .subscribe((next) -> {
                     JsonObject ijo = new JsonObject();
                     ijo.put("id", clientId);
-                    ijo.put("message", next.toString());
+                    ijo.put("message", next.getBody());
                     this.bus.publish(umb.getBusAddress(), ijo.encode());
-                },
-                err -> {
+                }, err -> {
                     String error = "Error getting messages from UMB";
                     logger.error(error);
                     JsonObject ejo = new JsonObject();
@@ -698,9 +766,11 @@ public class Polarizer extends AbstractVerticle {
                     ejo.put("message", error);
                     this.bus.publish(umb.getBusAddress(), ejo.encode());
                 });
-            maybe.first = isConn;
-            maybe.second = Optional.of(disp);
+            maybe.first = cbl;
+            maybe.second = isConn;
+            maybe.third = Optional.of(disp);
         } catch (IOException e) {
+            maybe.first = null;
             e.printStackTrace();
             jo.put("id", "none");
             jo.put("message", String.format("Could not get broker configuration from %s", brokerCfgPath));
@@ -747,30 +817,20 @@ public class Polarizer extends AbstractVerticle {
      *
      * This function is a bridge from the CIBusListener, listening to the JMS broker, to a websocket
      *
-     * @param cbl
      */
-    public static void
-    jmsToWebSocket( CIBusListener<ProcessingInfo> cbl
-                  , long timeout
-                  , ServerWebSocket ws
-                  , MessageHandler<DefaultResult> hdlr
-                  , int maxsize) {
-        // We're going to listen the CIBusListener's nodeSub, which is an Observable.  When an event comes
+    public void
+    jmsToWebSocket( ServerWebSocket ws
+                  , UMBListenerData umb) {
+        // We're going to listen to the messages published to
         // in, let the MessageHandler parse the ObjectNode.
         // TODO: for the timeout operator, if we surpass this, make it call a function to check the queue browser
         // TODO: Figure out a way to limit the number emitted
-        cbl.getNodeSub()
-            .timeout(timeout, TimeUnit.MILLISECONDS)
-            .map((ObjectNode node) -> {
-                MessageResult<DefaultResult> result = hdlr.handle(node);
-                byte[] content = result.getBody().getBytes("UTF-8");
-                io.vertx.core.buffer.Buffer buff = io.vertx.core.buffer.Buffer.buffer(content);
-                return Buffer.newInstance(buff);
-            })
-            .subscribe((Buffer item) -> {
-                // TODO:
-                bufferToWebSocket(ws, item, maxsize);
-            });
+        logger.info("Start listening for JMS messages to bridge to websocket");
+
+        this.bus.consumer(umb.getBusAddress(), (Message<String> msg) -> {
+            // TODO: Might need to use bufferToWebSocket
+            ws.writeTextMessage(msg.body());
+        });
     }
 
     private void testcaseImport(ServerWebSocket ws) {
@@ -789,7 +849,25 @@ public class Polarizer extends AbstractVerticle {
                         data.getTestcasePath(), mapping, cfg.getTestcase());
                 String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
                 BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
-                CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
+
+                // Create a UMBListenerData object, so we can send messages over the event bus
+                Selector sel = cfg.getTestcase().getSelector();
+                String selector = String.format("%s='%s'", sel.getName(), sel.getValue());
+                UMBListenerData.UMBAction act = UMBListenerData.UMBAction.START;
+                String id = UUID.randomUUID().toString();
+                String tag = "testcase-import-" + id;
+                String busAddress = String.format("%s.%s", TCIMPORT_BUS, id);
+                UMBListenerData umb = UMBListenerData.makeDefault(act, selector, tag);
+                umb.setBusAddress(busAddress);
+
+                // Bridge the JMS to the websocket
+                int maxsize = 1024 * 1024;
+                jmsToWebSocket(ws, umb);
+
+                // Create the CIBusListener, the Connection (so we can close) and a way to cancel
+                Tuple3<CIBusListener<DefaultResult>, Optional<Connection>, Optional<Disposable>> make;
+                make = makeTestCaseListener(hdlr, umb);
+                CIBusListener<DefaultResult> cbl = make.first;
 
                 String address = String.format("Consumer.%s.%s", cbl.getClientID(), CIBusListener.TOPIC);
                 TCImportArgs args = new TCImportArgs(cfg, address);
@@ -797,17 +875,13 @@ public class Polarizer extends AbstractVerticle {
 
                 // Run the import request (the post) in a worker verticle in case the http takes a long time
                 // TODO: make a post() using vertx client instead of blocking httpclient
+                logger.info("Launching worker verticle to make TestCase import");
                 WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
                 this.executeTCImport(executor, args, cbl, address, jo)
                         .subscribe((JsonObject resp) -> {
                             logger.info(resp.getString("result"));
                             // TODO: Dig into this json data, and get the JobID
                         });
-
-                // Bridge the JMS to the websocket
-                int maxsize = 1024 * 1024;
-                long timeout = brokerCfg.getBrokers().get("ci").getMessageTimeout();
-                jmsToWebSocket(cbl, timeout, ws, hdlr, maxsize);
 
                 jo.put("result", "Waiting for reply from Polarion");
                 String msg = jo.encode();
@@ -834,12 +908,12 @@ public class Polarizer extends AbstractVerticle {
     }
 
 
-    private String getTCImportResult(Optional<MessageResult<ProcessingInfo>> maybe) {
+    private String getTCImportResult(Optional<MessageResult<DefaultResult>> maybe) {
         String msg = "No Results";
         if (maybe.isPresent()) {
-            MessageResult<ProcessingInfo> mr = maybe.get();
+            MessageResult<DefaultResult> mr = maybe.get();
             if (mr.info != null)
-                msg = mr.info.getMessage();
+                msg = mr.info.getText();
         }
         return msg;
     }
@@ -867,7 +941,7 @@ public class Polarizer extends AbstractVerticle {
             String closeRequest = mapper.writeValueAsString(next);
             ws.closeHandler(hdlr -> {
                 logger.info("==========================");
-                logger.info(String.format("Closing UMB websocket brridge for %s\n%s", clientID, closeRequest));
+                logger.info(String.format("Closing UMB websocket bridge for %s\n%s", clientID, closeRequest));
                 logger.info("==========================");
                 this.sockets.remove(clientID);
                 this.bus.publish(umbAddress, closeRequest);
@@ -910,10 +984,16 @@ public class Polarizer extends AbstractVerticle {
         req.bodyHandler(upload -> {
             logger.info("Got the test config file");
             String body = upload.toString();
+            logger.info(body);
             // Send message on event bus to the APITestSuite Verticle
             String address = APITestSuite.class.getCanonicalName();
+            logger.info("Sending message to: " + address);
             // FIXME: Tried using rxSend() but got an error that no consumer was registered
-            this.bus.send(address, body);
+            this.bus.consumer("APITestSuite", (Message<String> msg) -> {
+               logger.info("Got message for APITestSuite");
+            });
+            this.bus.send("APITestSuite", body);
+            // this.bus.rxSend("APITestSuite", body);
             JsonObject jo = new JsonObject();
             jo.put("result", "Kicking off tests");
             req.response().end(jo.encode());
@@ -934,9 +1014,7 @@ public class Polarizer extends AbstractVerticle {
             opts = new HttpServerOptions();
         return opts
                 .setSsl(true)
-                .setKeyStoreOptions(new JksOptions()
-                        .setPath(keystore)
-                        .setPassword(keypass));
+                .setKeyStoreOptions(new JksOptions().setPath(keystore).setPassword(keypass));
     }
 
     public static void test_() {
@@ -966,7 +1044,7 @@ public class Polarizer extends AbstractVerticle {
     }
 
     public void start() {
-        Polarizer.test_();
+        //Polarizer.test_();
         this.bus = vertx.eventBus();
         port = config().getInteger(CONFIG_HTTP_SERVER_PORT, 9000);
         String host = config().getString(CONFIG_HTTP_SERVER_HOST, "rhsm-cimetrics.usersys.redhat.com");
@@ -981,6 +1059,7 @@ public class Polarizer extends AbstractVerticle {
             req.setExpectMultipart(true);
 
             router.route("/testcase/mapper").method(HttpMethod.POST).handler(this::testCaseMapper);
+            router.post("/testcase/import").handler(this::oldTestCaseImport);
             router.post("/xunit/generate").handler(this::xunitGenerator);
             router.post("/xunit/import").handler(this::xunitImport);
             router.post("/test").handler(this::test);

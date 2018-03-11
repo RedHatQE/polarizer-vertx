@@ -11,7 +11,6 @@ import com.github.redhatqe.polarizer.verticles.tests.config.APITestSuiteConfig;
 import io.reactivex.Single;
 import io.reactivex.disposables.Disposable;
 import io.vertx.core.DeploymentOptions;
-import io.vertx.core.VertxOptions;
 import io.vertx.core.json.JsonObject;
 import io.vertx.reactivex.core.AbstractVerticle;
 import org.apache.logging.log4j.LogManager;
@@ -35,39 +34,32 @@ public class MainVerticle extends AbstractVerticle {
     private Disposable dep;
 
     public void start() throws IOException {
-        VertxOptions opts = new VertxOptions();
-        opts.setBlockedThreadCheckInterval(120000);
         logger.info("Starting MainVerticle");
-        //Vertx.vertx(opts);
         DeploymentOptions pOpts = this.setupConfig(PolarizerVertConfig.class, POLARIZER_ENV, POLARIZER_PROP);
         DeploymentOptions tOpts = this.setupConfig(APITestSuiteConfig.class, TEST_ENV, TEST_PROP);
 
         Single<String> polarizerDeployer = vertx.rxDeployVerticle(POLARIZER_VERT, pOpts);
         dep = polarizerDeployer.subscribe(succ -> {
-                    // Start the APITestSuite verticle once the Polarizer verticle is running
-                    Single<String> deployed = vertx.rxDeployVerticle(TEST_VERT, tOpts);
-                    deployed.subscribe(next -> logger.info("APITestSuite Verticle is now deployed"),
-                                       err -> logger.error(err.getMessage()));
-                    Single<String> umbvert = vertx.rxDeployVerticle(UMB_VERTICLE);
-                    // Start the UMB verticle once Polarizer verticle is running
-                    umbvert.subscribe(next -> {
-                        logger.info("UMB Verticle is now deployed");
-                    }, err -> {
-                        logger.error("Failed to deploy UMB Verticle");
-                    });
+            // Start the APITestSuite verticle once the Polarizer verticle is running
+            Single<String> deployed = vertx.rxDeployVerticle(TEST_VERT, tOpts);
+            deployed.subscribe(next -> logger.info("APITestSuite Verticle is now deployed"),
+                               err -> logger.error(err.getMessage()));
+            Single<String> umbvert = vertx.rxDeployVerticle(UMB_VERTICLE);
 
-                    logger.info("Polarizer was deployed");
+            // Start the UMB verticle once Polarizer verticle is running
+            umbvert.subscribe(next -> {
+                logger.info("UMB Verticle is now deployed");
+            }, err -> {
+                logger.error("Failed to deploy UMB Verticle");
+            });
 
+            logger.info("Polarizer was deployed");
 
-
-                    Single<String> wsclient = vertx.rxDeployVerticle(WebSocketClient.class.getCanonicalName());
-                    wsclient.subscribe(n -> {
-                        logger.info("Starting ws client");
-                    });
-
-
-            },
-            err -> logger.error("Failed to deploy Polarizer\n" + err.getMessage()));
+            Single<String> wsclient = vertx.rxDeployVerticle(WebSocketClient.class.getCanonicalName());
+            wsclient.subscribe(n -> {
+                logger.info("Starting ws client");
+            });
+        }, err -> logger.error("Failed to deploy Polarizer\n" + err.getMessage()));
     }
 
     public void stop() {

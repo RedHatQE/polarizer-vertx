@@ -1,7 +1,6 @@
 package com.github.redhatqe.polarizer.verticles.messaging;
 
 import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.github.redhatqe.polarizer.data.ProcessingInfo;
 import com.github.redhatqe.polarizer.messagebus.CIBusListener;
 import com.github.redhatqe.polarizer.messagebus.DefaultResult;
 import com.github.redhatqe.polarizer.messagebus.MessageHandler;
@@ -79,7 +78,7 @@ public class UMB extends AbstractVerticle {
         String brokerCfgPath = BrokerConfig.getDefaultConfigPath();
         try {
             BrokerConfig brokerCfg = Serializer.fromYaml(BrokerConfig.class, new File(brokerCfgPath));
-            CIBusListener<ProcessingInfo> cbl = new CIBusListener<>(hdlr, brokerCfg);
+            CIBusListener<DefaultResult> cbl = new CIBusListener<>(hdlr, brokerCfg);
             Optional<Connection> isConn = cbl.tapIntoMessageBus(selector, cbl.createListener(cbl.messageParser()), address);
 
             String clientId = String.format("%s-%s", req.getTag(), remote);

@@ -2,19 +2,21 @@ package com.github.redhatqe.polarizer.verticles.proto;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.UUID;
+
 public class UMBListenerData {
     @JsonProperty(required = true)
     private String topic;
     @JsonProperty(required = true)
     private String selector;
     @JsonProperty(value = "bus-address", required = true)
-    private String busAddress;
+    private String busAddress;    // address on event bus
     @JsonProperty(required = true)
     private String action;
     @JsonProperty(required = true)
     private String tag;
 
-    public String clientAddress;
+    public String clientAddress;  // what service to send to
 
 
     public UMBListenerData() {
@@ -68,5 +70,17 @@ public class UMBListenerData {
 
     public void setTag(String tag) {
         this.tag = tag;
+    }
+
+    public enum UMBAction {
+        START, STOP
+    }
+
+    public static UMBListenerData makeDefault(UMBAction action, String sel, String tag) {
+        UUID uuid = UUID.randomUUID();
+        String topic = String.format("Consumer.client-polarize.%s.VirtualTopic.qe.ci.>", uuid.toString());
+        String busAddress = "rhsmqe.messages";
+        String act = action.toString().toLowerCase();
+        return new UMBListenerData(topic, sel, busAddress, act, tag, "null");
     }
 }
