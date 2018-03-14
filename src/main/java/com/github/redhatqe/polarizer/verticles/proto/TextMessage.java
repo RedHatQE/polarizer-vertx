@@ -3,8 +3,6 @@ package com.github.redhatqe.polarizer.verticles.proto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.vertx.core.json.JsonObject;
 
-
-
 /**
  * Message exchange format for both eventbus and websockets using text based (JSON) formats
  *

@@ -1,0 +1,10 @@
+{
+  "op": "xunit-import-ws",
+  "type": "na",
+  "tag": "some-unique-id",
+  "ack": true,
+  "data": {
+    "xargs": "",
+    "xunit": ""
+  }
+}

@@ -11,8 +11,10 @@ import com.github.redhatqe.polarizer.verticles.tests.config.APITestSuiteConfig;
 import io.reactivex.Single;
 import io.reactivex.disposables.Disposable;
 import io.vertx.core.DeploymentOptions;
+import io.vertx.core.VertxOptions;
 import io.vertx.core.json.JsonObject;
 import io.vertx.reactivex.core.AbstractVerticle;
+import io.vertx.reactivex.core.Vertx;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -34,6 +36,9 @@ public class MainVerticle extends AbstractVerticle {
     private Disposable dep;
 
     public void start() throws IOException {
+        VertxOptions opts = new VertxOptions();
+        opts.setBlockedThreadCheckInterval(120000);
+        this.vertx = Vertx.vertx(opts);
         logger.info("Starting MainVerticle");
         DeploymentOptions pOpts = this.setupConfig(PolarizerVertConfig.class, POLARIZER_ENV, POLARIZER_PROP);
         DeploymentOptions tOpts = this.setupConfig(APITestSuiteConfig.class, TEST_ENV, TEST_PROP);
@@ -44,6 +49,7 @@ public class MainVerticle extends AbstractVerticle {
             Single<String> deployed = vertx.rxDeployVerticle(TEST_VERT, tOpts);
             deployed.subscribe(next -> logger.info("APITestSuite Verticle is now deployed"),
                                err -> logger.error(err.getMessage()));
+
             Single<String> umbvert = vertx.rxDeployVerticle(UMB_VERTICLE);
 
             // Start the UMB verticle once Polarizer verticle is running
@@ -53,13 +59,16 @@ public class MainVerticle extends AbstractVerticle {
                 logger.error("Failed to deploy UMB Verticle");
             });
 
-            logger.info("Polarizer was deployed");
+            logger.info("Main Polarizer Verticle was deployed");
 
             Single<String> wsclient = vertx.rxDeployVerticle(WebSocketClient.class.getCanonicalName());
             wsclient.subscribe(n -> {
                 logger.info("Starting ws client");
             });
-        }, err -> logger.error("Failed to deploy Polarizer\n" + err.getMessage()));
+        }, err -> {
+            logger.error("Failed to deploy Polarizer\n" + err.getMessage());
+            err.printStackTrace();
+        });
     }
 
     public void stop() {

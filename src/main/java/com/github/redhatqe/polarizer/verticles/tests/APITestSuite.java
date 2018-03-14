@@ -43,15 +43,17 @@ public class APITestSuite extends AbstractVerticle {
         host = this.config().getString("host", "localhost");
         // TODO: Make a service endpoint on Polarizer and have it send msg on Event bus
         this.registerEventBus();
-        this.bus.consumer("APITestSuite", (Message<String> msg) -> {
-            logger.info("In APITestSuite, got message");
+        this.bus.consumer("APITestSuite-stop", (Message<String> msg) -> {
+            logger.info("Got APITestSuite-stop message");
+            this.testObserver.unregister();
         });
     }
 
     private void registerEventBus() {
         String address = APITestSuite.class.getCanonicalName();
         logger.info(String.format("Registering %s on event bus", address));
-        this.bus.consumer("APITestSuite", (Message<String> msg) -> {
+        this.testObserver = this.bus.consumer("APITestSuite");
+        this.testObserver.handler((Message<String> msg) -> {
             String content = msg.body();
             try {
                 this.sconfig = Serializer.from(APITestSuiteConfig.class, content);
