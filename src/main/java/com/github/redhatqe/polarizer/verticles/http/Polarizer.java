@@ -87,7 +87,7 @@ public class Polarizer extends AbstractVerticle {
         HttpServer server = vertx.createHttpServer(opts);  // TODO: pass opts to the method for TLS
         Router router = Router.router(vertx);
 
-        server.requestHandler(req -> {
+        server.requestHandler((HttpServerRequest req) -> {
             req.setExpectMultipart(true);
 
             router.route("/testcase/mapper").method(HttpMethod.POST).handler(this::testCaseMapper);
@@ -108,20 +108,9 @@ public class Polarizer extends AbstractVerticle {
             // NOTE: It seems like you can't do the websocket handlers from within the router.  If you do, you will
             // get a failure in the handler when you try to do a request.upgrade().  So, handle them here where the
             // upgrade request seems to work.
-            if (req.path().endsWith("/umb/start")) {
-                ServerWebSocket ws = req.upgrade();
-                this.umbListener(ws);
-            }
-
-            if (req.path().contains("/ws/testcase/import")) {
-                ServerWebSocket ws = req.upgrade();
-                this.testcaseImport(ws);
-            }
-
-            if (req.path().contains("/ws/xunit/import")) {
-                ServerWebSocket ws = req.upgrade();
-                this.xunitImportWS(ws);
-            }
+            doWebSocket(req, "/umb/start", this::umbListener);
+            doWebSocket(req, "/ws/testcase/import", this::testcaseImport);
+            doWebSocket(req, "/ws/xunit/import", this::xunitImportWS);
         })
         .rxListen(port)
         .subscribe(succ -> logger.info(String.format("Server is now listening on port %d", this.port)),
@@ -129,6 +118,24 @@ public class Polarizer extends AbstractVerticle {
                     logger.info(String.format("Could not start Server on %d: %s", this.port, err.getMessage()));
                     err.printStackTrace();
                 });
+    }
+
+    private void doWebSocket(HttpServerRequest req, String test, Consumer<ServerWebSocket> fn) {
+        if (req.path().contains(test)) {
+            ServerWebSocket ws = req.upgrade();
+            String remote = ws.remoteAddress().toString();
+            ws.closeHandler(hdlr -> {
+               logger.info(String.format("Websocket connection was closed for %s", remote));
+            });
+            ws.exceptionHandler(hdlr -> {
+                logger.error(hdlr.getMessage());
+            });
+            try {
+                fn.accept(ws);
+            } catch (Exception e) {
+                logger.error(e.getMessage());
+            }
+        }
     }
 
     /**
@@ -714,7 +721,7 @@ public class Polarizer extends AbstractVerticle {
                     if (request.getAck()) {
                         // TODO: Need to check by Op code if the reply requires a nak
                         JsonObject reply = request.makeReplyMessage("Received message", false);
-                        ws.writeFinalTextFrame(reply.encode());
+                        wsSend(ws, reply.encode());
                     }
                     logger.info(String.format("Deserialized buffer into %s object", cls.getCanonicalName()));
                     emitter.onNext(request);
@@ -767,26 +774,6 @@ public class Polarizer extends AbstractVerticle {
     }
 
     private Single<JsonObject>
-    executeTCImport( WorkerExecutor executor
-                   , ImportArgs args
-                   , CIBusListener<DefaultResult> cbl
-                   , String address
-                   , JsonObject jo) {
-        return executor.rxExecuteBlocking((Future<JsonObject> fut) -> {
-            Optional<MessageResult<DefaultResult>> on;
-            List<Tuple<String, File>> files = new ArrayList<>();
-            files.add(new Tuple<>("file", args.xml));
-            on = ImporterRequest.sendImport(cbl, args.domain, args.url, args.user, args.pw, files,
-                    args.selector(), address);
-
-            // Get the immediate return from the post.  Don't wait for UMB response
-            String msg = this.getTCImportResult(on);
-            jo.put("result", msg);
-            fut.complete(jo);
-        });
-    }
-
-    private Single<JsonObject>
     executeImport( WorkerExecutor executor
                  , ImportArgs args
                  , CIBusListener<DefaultResult> cbl
@@ -798,10 +785,18 @@ public class Polarizer extends AbstractVerticle {
             files.add(new Tuple<>("file", args.xml));
             on = ImporterRequest.sendImport(cbl, args.url, args.domain, args.user, args.pw, files,
                     args.selector(), address);
+            String info = "No Info";
+            if (on.isPresent() && on.get().info != null) {
+                DefaultResult res = on.get().info;
+                info = res.getText();
+            }
 
             // Get the immediate return from the post.  Don't wait for UMB response
             String msg = this.getTCImportResult(on);
-            jo.put("result", msg);
+            JsonObject inner = new JsonObject();
+            inner.put("body", msg);
+            inner.put("info", info);
+            jo.put("result", inner);
             fut.complete(jo);
         });
     }
@@ -850,10 +845,13 @@ public class Polarizer extends AbstractVerticle {
             Disposable disp = cbl.getResultSubject()
                 .timeout(timeout, TimeUnit.MILLISECONDS)
                 .take(msgCount)
-                .subscribe((next) -> {
+                .subscribe((MessageResult<DefaultResult> next) -> {
+                    String body = next.getBody() != null ? next.getBody() : "No Body";
+                    String info = next.info != null ? next.info.getText() : "No Info";
                     JsonObject ijo = new JsonObject();
                     ijo.put("id", clientId);
-                    ijo.put("message", next.getBody());
+                    ijo.put("message", body);
+                    ijo.put("info", info);
                     this.bus.publish(umb.getBusAddress(), ijo.encode());
                 }, err -> {
                     String error = "Error getting messages from UMB";
@@ -890,7 +888,7 @@ public class Polarizer extends AbstractVerticle {
             int start = 0;
             while(buff.length() > maxsize) {
                 if (start == end) {
-                    ws.writeFinalTextFrame(buff.toString());
+                    wsSend(ws, buff.toString());
                 }
                 int len = buff.length() - start;
                 int transmit = len < maxsize ? len : maxsize;
@@ -909,6 +907,15 @@ public class Polarizer extends AbstractVerticle {
         }
     }
 
+    private static void wsSend(ServerWebSocket ws, String body) {
+        try {
+            ws.writeFinalTextFrame(body);
+        }
+        catch (IllegalStateException iex) {
+            logger.warn("Socket prematurely close");
+        }
+    }
+
     /**
      * TODO: Figure out how to make this more generic
      *
@@ -918,15 +925,18 @@ public class Polarizer extends AbstractVerticle {
     private void
     jmsToWebSocket( ServerWebSocket ws
                   , UMBListenerData umb) {
-        // We're going to listen to the messages published to
-        // in, let the MessageHandler parse the ObjectNode.
+        // We're going to listen to the messages published to the address. let the MessageHandler parse the ObjectNode.
         // TODO: for the timeout operator, if we surpass this, make it call a function to check the queue browser
         // TODO: Figure out a way to limit the number emitted
         logger.info("Start listening for JMS messages to bridge to websocket");
 
+        // TODO: Add a handler so we can dispose of this, otherwise we may get memory leaks over time
+        // FIXME: Won't this also get all messages from UMB?
         this.bus.consumer(umb.getBusAddress(), (Message<String> msg) -> {
-            // TODO: Might need to use bufferToWebSocket
-            ws.writeTextMessage(msg.body());
+            // TODO: Might need to use bufferToWebSocket if message is huge to split into chunks
+            logger.info(String.format("In jmsToWebSocket: Got message on event bus at %s", umb.getBusAddress()));
+            logger.info(msg.body());
+            wsSend(ws, msg.body());
         });
     }
 
@@ -974,14 +984,17 @@ public class Polarizer extends AbstractVerticle {
                 WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
                 this.executeImport(executor, args, cbl, address, jo)
                     .subscribe((JsonObject resp) -> {
-                        logger.info(resp.toString());
+                        logger.info(String.format("Got response\n%s", resp.toString()));
+                        TextMessage reply = new TextMessage("", "na", "", "xunitImportWS", false);
+                        String rep = reply.makeReplyMessage(resp.encode(), false).encode();
+                        this.bus.publish(umb.getBusAddress(), rep);
                     });
             }, err -> {
                 logger.error("Failed uploading necessary files");
                 JsonObject jo = new JsonObject();
-                jo.put("result", "error");
+                jo.put("result", MessageResult.Status.SEND_FAIL);
                 jo.put("message", "Failed uploading necessary files");
-                ws.writeFinalTextFrame(jo.encode());
+                wsSend(ws, jo.encode());
             });
     }
 
@@ -1021,16 +1034,16 @@ public class Polarizer extends AbstractVerticle {
                 // TODO: make a post() using vertx client instead of blocking httpclient
                 logger.info("Launching worker verticle to make TestCase import");
                 WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
-                this.executeTCImport(executor, args, cbl, address, jo)
+                this.executeImport(executor, args, cbl, address, jo)
                         .subscribe((JsonObject resp) -> {
                             logger.info(resp.getString("result"));
                             // TODO: Dig into this json data, and get the JobID
                         });
 
-                jo.put("result", "Waiting for reply from Polarion");
+                jo.put("result", MessageResult.Status.PENDING.toString());
                 String msg = jo.encode();
                 if (msg.length() < maxsize) {
-                    ws.writeFinalTextFrame(msg);
+                    wsSend(ws, msg);
                 }
                 else {
                     Buffer buff = Buffer.buffer(msg);
@@ -1040,9 +1053,9 @@ public class Polarizer extends AbstractVerticle {
             }, err -> {
                 logger.error("Failed uploading necessary files");
                 JsonObject jo = new JsonObject();
-                jo.put("result", "error");
+                jo.put("result", MessageResult.Status.FAILED.toString());
                 jo.put("message", "Failed uploading necessary files");
-                ws.writeFinalTextFrame(jo.encode());
+                wsSend(ws, jo.encode());
             });
     }
 
@@ -1060,8 +1073,7 @@ public class Polarizer extends AbstractVerticle {
         String msg = "No Results";
         if (maybe.isPresent()) {
             MessageResult<DefaultResult> mr = maybe.get();
-            if (mr.info != null)
-                msg = mr.info.getText();
+            msg = mr.getBody();
         }
         return msg;
     }
@@ -1109,12 +1121,7 @@ public class Polarizer extends AbstractVerticle {
                     return;
                 ws.resume();
                 String item = msg.body();
-                try {
-                    ws.writeFinalTextFrame(item);
-                }
-                catch (IllegalStateException ise) {
-                    logger.error(ise.getMessage());
-                }
+                wsSend(ws, item);
             });
         });
     }
@@ -1140,7 +1147,8 @@ public class Polarizer extends AbstractVerticle {
             this.bus.send("APITestSuite", body);
             // this.bus.rxSend("APITestSuite", body);
             JsonObject jo = new JsonObject();
-            jo.put("result", "Kicking off tests");
+            jo.put("result", MessageResult.Status.PENDING.toString());
+            jo.put("message", "Kicked off tests");
             req.response().end(jo.encode());
         });
     }
