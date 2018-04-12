@@ -108,9 +108,9 @@ public class APITestSuite extends AbstractVerticle {
         this.logger.info("================ Starting tests ================");
         //suite.test("basic xunit generate test", this.testXunitGenerate());
         //suite.test("second xunit generate test", this.testXunitGenerate());
-        suite.test("basic xunit import test", this.testXunitImport());
+        //suite.test("basic xunit import test", this.testXunitImport());
         //suite.test("second xunit import test", this.testXunitImport());
-        //suite.test("tests testcase mapper endpoint", this.testTCMapper());
+        suite.test("tests testcase mapper endpoint", this.testTCMapper());
         //suite.test("tests testcase import endpoint", this.testTestCaseImport());
 
         ReportOptions consoleReport = new ReportOptions()
@@ -193,8 +193,8 @@ public class APITestSuite extends AbstractVerticle {
                     , url, focus, tcargs, mapping));
             Unirest.post(url)
                     .header("accept", "application/json")
-                    .field("xunit", new File(focus))
-                    .field("xargs", new File(tcargs))
+                    .field("jar", new File(focus))
+                    .field("tcargs", new File(tcargs))
                     .field("mapping", new File(mapping))
                     .asJsonAsync(this.defaultCallBack("/testcase/mapper", ctx));
             ctx.assertTrue(true);

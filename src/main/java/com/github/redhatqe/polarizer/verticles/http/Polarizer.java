@@ -173,21 +173,21 @@ public class Polarizer extends AbstractVerticle {
         // completion event, we can convert the buffer to a string, and deserialize into our object
         Buffer buff = Buffer.buffer();
         upload.toFlowable().subscribe(
-                buff::appendBuffer,
-                err -> logger.error(String.format("Could not upload %s file for %s", t.first, t.second.toString())),
-                () -> {
-                    logger.info(String.format("%s file for %s has been fully uploaded", t.first, t.second.toString()));
-                    U xargs;
-                    try {
-                        xargs = Serializer.from(cls, buff.toString());
-                        fn.accept(xargs);
-                        data.addToComplete(t.first);
-                        emitter.onNext(data);
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                        emitter.onError(e);
-                    }
-                });
+            buff::appendBuffer,
+            err -> logger.error(String.format("Could not upload %s file for %s", t.first, t.second.toString())),
+            () -> {
+                logger.info(String.format("%s file for %s has been fully uploaded", t.first, t.second.toString()));
+                U xargs;
+                try {
+                    xargs = Serializer.from(cls, buff.toString());
+                    fn.accept(xargs);
+                    data.addToComplete(t.first);
+                    emitter.onNext(data);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    emitter.onError(e);
+                }
+            });
     }
 
     /**
@@ -208,24 +208,36 @@ public class Polarizer extends AbstractVerticle {
                 , Path path
                 , T data
                 , ObservableEmitter<T> emitter
-                , Consumer<String> fn) {
+                , Consumer<String> fn
+                , Boolean isText) {
         Buffer buff = Buffer.buffer();
         logger.debug("upload object: "  + upload.toString());
+        if (upload.isSizeAvailable())
+            logger.info("Size of upload is %d", upload.size());
         upload.toFlowable().subscribe(
-                buff::appendBuffer,
-                err -> logger.error(String.format("Could not upload %s file", t.first)),
-                () -> {
-                    logger.info(String.format("%s file for %s has been fully uploaded", t.first, t.second));
-                    try {
+            n -> {
+                logger.info(String.format("Appended %d bytes to buffer. buff size = %d", n.length(), buff.length()));
+                buff.appendBuffer(n);
+            },
+            err -> {
+                logger.error(String.format("Could not upload %s file", t.first));
+                logger.error(String.format("Error: %s", err.getMessage()));
+            },
+            () -> {
+                logger.info(String.format("%s file for %s has been fully uploaded", t.first, t.second));
+                try {
+                    if (isText)
                         FileHelper.writeFile(path, buff.toString());
-                        fn.accept(path.toString());
-                        data.addToComplete(t.first);
-                        emitter.onNext(data);
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                        emitter.onError(e);
-                    }
-                });
+                    else
+                        this.vertx.fileSystem().writeFileBlocking(path.toString(), buff);
+                    fn.accept(path.toString());
+                    data.addToComplete(t.first);
+                    emitter.onNext(data);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                    emitter.onError(e);
+                }
+            });
     }
 
     /**
@@ -252,7 +264,7 @@ public class Polarizer extends AbstractVerticle {
                             path = FileHelper.makeTempPath("/tmp", "polarion-result-", ".xml", null);
                             t = new Tuple<>("xunit", id);
                             data = new XUnitGenData(id);
-                            this.fileUploader(upload, t, path, data, emitter, data::setXunitPath);
+                            this.fileUploader(upload, t, path, data, emitter, data::setXunitPath, true);
                             break;
                         case "xargs":
                             data = new XUnitGenData(id);
@@ -263,7 +275,7 @@ public class Polarizer extends AbstractVerticle {
                             path = FileHelper.makeTempPath("/tmp", "mapping-", ".json", null);
                             t = new Tuple<>("mapping", id);
                             data = new XUnitGenData(id);
-                            this.fileUploader(upload, t, path, data, emitter, data::setMapping);
+                            this.fileUploader(upload, t, path, data, emitter, data::setMapping, true);
                             break;
                         default:
                             break;
@@ -345,7 +357,7 @@ public class Polarizer extends AbstractVerticle {
                             Path path = FileHelper.makeTempPath("/tmp", "polarion-result-", ".xml", null);
                             t = new Tuple<>("xunit", id);
                             data = new XUnitData(id);
-                            this.fileUploader(upload, t, path, data, emitter, data::setXunitPath);
+                            this.fileUploader(upload, t, path, data, emitter, data::setXunitPath, true);
                             break;
                         case "xargs":
                             data = new XUnitGenData(id);
@@ -390,34 +402,34 @@ public class Polarizer extends AbstractVerticle {
         // this should be "fire and forget".  If we need to know if it got completed, we should have a persistent
         // queue "mailbox" to be notified if the request went through.
         s$.scan(XUnitData::merge)
-                .subscribe((XUnitData xu) -> {
-                    if (xu.done()) {
-                        logger.info("Creating WorkerExecutor to run XUnitService.request");
-                        // Run this code in a Worker Verticle, since this can take a long time.
-                        WorkerExecutor executor = vertx.createSharedWorkerExecutor("XUnitService.request");
-                        executor.rxExecuteBlocking((Future<JsonObject> fut) -> {
-                            try {
-                                logger.info("Calling XUnitService.request");
-                                JsonObject jo = XUnitService.request(xu.getConfig());
-                                fut.complete(jo);
-                            } catch (IOException e) {
-                                e.printStackTrace();
-                                fut.fail(e);
-                            }
-                        }).subscribe(item -> {
-                            req.response().end(item.encode());
-                        }, err -> {
-                            logger.error(err.getMessage());
-                        });
-                    }
-                }, err -> {
-                    JsonObject jo = new JsonObject();
-                    String msg = "Error with upload";
-                    logger.error(msg);
-                    jo.put("status", "failed");
-                    jo.put("errors", msg);
-                    req.response().end(jo.encode());
-                });
+            .subscribe((XUnitData xu) -> {
+                if (xu.done()) {
+                    logger.info("Creating WorkerExecutor to run XUnitService.request");
+                    // Run this code in a Worker Verticle, since this can take a long time.
+                    WorkerExecutor executor = vertx.createSharedWorkerExecutor("XUnitService.request");
+                    executor.rxExecuteBlocking((Future<JsonObject> fut) -> {
+                        try {
+                            logger.info("Calling XUnitService.request");
+                            JsonObject jo = XUnitService.request(xu.getConfig());
+                            fut.complete(jo);
+                        } catch (IOException e) {
+                            e.printStackTrace();
+                            fut.fail(e);
+                        }
+                    }).subscribe(item -> {
+                        req.response().end(item.encode());
+                    }, err -> {
+                        logger.error(err.getMessage());
+                    });
+                }
+            }, err -> {
+                JsonObject jo = new JsonObject();
+                String msg = "Error with upload";
+                logger.error(msg);
+                jo.put("status", "failed");
+                jo.put("errors", msg);
+                req.response().end(jo.encode());
+            });
     }
 
     // FIXME: This seems to hang while uploading or reading in the jar file
@@ -434,12 +446,12 @@ public class Polarizer extends AbstractVerticle {
                         case "jar":
                             path = FileHelper.makeTempPath("/tmp", "jar-to-check-", ".jar", null);
                             t = new Tuple<>("jar", id);
-                            this.fileUploader(upload, t, path, data, emitter, data::setJarToCheck);
+                            this.fileUploader(upload, t, path, data, emitter, data::setJarToCheck, false);
                             break;
                         case "mapping":
                             path = FileHelper.makeTempPath("/tmp","mapping-", ".json", null);
                             t = new Tuple<>("mapping", id);
-                            this.fileUploader(upload, t, path, data, emitter, data::setMapping);
+                            this.fileUploader(upload, t, path, data, emitter, data::setMapping, true);
                             break;
                         case "tcargs":
                             t = new Tuple<>("tcargs", id);
@@ -458,7 +470,7 @@ public class Polarizer extends AbstractVerticle {
     /**
      * This method will read in the jar file and the mapping file, and determine if a testcase import is needed.
      *
-     * Will return a new mapping.json file
+     * TODO: Needs to return a new mapping.json file
      *
      * @param rc context passed by server
      */
@@ -469,25 +481,26 @@ public class Polarizer extends AbstractVerticle {
         UUID id = UUID.randomUUID();
         Observable<TestCaseData> s$ = this.makeTCMapperObservable(id, req);
         s$.scan(TestCaseData::merge)
-                .subscribe(data -> {
-                    if (data.done()) {
-                        JsonObject jo;
-                        TestCaseConfig cfg = data.getConfig();
-                        try {
-                            jo = MainReflector.process(cfg);
-                            jo.put("result", "passed");
-                        } catch (IOException ex) {
-                            jo = new JsonObject();
-                            jo.put("result", "failed");
-                        }
-                        req.response().end(jo.encode());
+            .subscribe(data -> {
+                if (data.done()) {
+                    JsonObject jo;
+                    TestCaseConfig cfg = data.getConfig();
+                    try {
+                        jo = MainReflector.process(cfg);
+                        // TODO: send the mapping.json back
+                        jo.put("result", "passed");
+                    } catch (IOException ex) {
+                        jo = new JsonObject();
+                        jo.put("result", "failed");
                     }
-                }, err -> {
-                    logger.error("Failed uploading necessary files");
-                    JsonObject jo = new JsonObject();
-                    jo.put("result", "error");
-                    jo.put("message", "Failed uploading necessary files");
-                });
+                    req.response().end(jo.encode());
+                }
+            }, err -> {
+                logger.error(err.getMessage());
+                JsonObject jo = new JsonObject();
+                jo.put("result", "error");
+                jo.put("message", "Failed uploading necessary files");
+            });
     }
 
     private static void
@@ -506,32 +519,32 @@ public class Polarizer extends AbstractVerticle {
                 return;
             }
             tc.getTestSteps().getTestStep().stream()
-                    .flatMap(ts -> ts.getTestStepColumn().stream())
-                    .map(tsc -> {
-                        List<Parameter> ps = tsc.getParameter();
-                        Map<String, IdParams> mparams;
-                        if (!mapping.containsKey(name))
-                            mparams = new HashMap<>();
-                        else
-                            mparams = mapping.get(name);
+                .flatMap(ts -> ts.getTestStepColumn().stream())
+                .map(tsc -> {
+                    List<Parameter> ps = tsc.getParameter();
+                    Map<String, IdParams> mparams;
+                    if (!mapping.containsKey(name))
+                        mparams = new HashMap<>();
+                    else
+                        mparams = mapping.get(name);
 
-                        IdParams idp = mparams.getOrDefault(projID, null);
-                        if (idp == null)
-                            idp = new IdParams();
+                    IdParams idp = mparams.getOrDefault(projID, null);
+                    if (idp == null)
+                        idp = new IdParams();
 
-                        List<String> pnames = ps.stream()
-                            .map(param -> {
-                                String pname = param.getName();
-                                logger.info(String.format("Adding parameter %s to %s", pname, name));
-                                return pname;
-                            })
-                            .collect(Collectors.toList());
-                        idp.setParameters(pnames);
-                        idp.setId(id);
-                        mparams.put(projID, idp);
-                        return mparams;
-                    })
-                    .forEach(mp -> mapping.put(name, mp));
+                    List<String> pnames = ps.stream()
+                        .map(param -> {
+                            String pname = param.getName();
+                            logger.info(String.format("Adding parameter %s to %s", pname, name));
+                            return pname;
+                        })
+                        .collect(Collectors.toList());
+                    idp.setParameters(pnames);
+                    idp.setId(id);
+                    mparams.put(projID, idp);
+                    return mparams;
+                })
+                .forEach(mp -> mapping.put(name, mp));
         });
     }
 
@@ -613,7 +626,7 @@ public class Polarizer extends AbstractVerticle {
                         case "testcase":
                             Path path = FileHelper.makeTempPath("/tmp", "polarion-tc-", ".xml", null);
                             t = new Tuple<>("testcase", id);
-                            this.fileUploader(upload, t, path, data, emitter, data::setTestcasePath);
+                            this.fileUploader(upload, t, path, data, emitter, data::setTestcasePath, true);
                             break;
                         case "tcargs":
                             t = new Tuple<>("tcargs", id);
@@ -622,7 +635,7 @@ public class Polarizer extends AbstractVerticle {
                         case "mapping":
                             Path mpath = FileHelper.makeTempPath("/tmp", "polarion-tcmap-", ".json", null);
                             t = new Tuple<>("mapping", id);
-                            this.fileUploader(upload, t, mpath, data, emitter, data::setMapping);
+                            this.fileUploader(upload, t, mpath, data, emitter, data::setMapping, true);
                             break;
                         default:
                             break;
@@ -980,12 +993,12 @@ public class Polarizer extends AbstractVerticle {
 
                 // Run the import request (the post) in a worker verticle in case the http takes a long time
                 // TODO: make a post() using vertx client instead of blocking httpclient
-                logger.info("Launching worker verticle to make TestCase import");
+                logger.info("Launching worker verticle to make XUnit import");
                 WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
                 this.executeImport(executor, args, cbl, address, jo)
                     .subscribe((JsonObject resp) -> {
                         logger.info(String.format("Got response\n%s", resp.toString()));
-                        TextMessage reply = new TextMessage("", "na", "", "xunitImportWS", false);
+                        TextMessage reply = new TextMessage("", "reply", "", "xunitImportWS", false);
                         String rep = reply.makeReplyMessage(resp.encode(), false).encode();
                         this.bus.publish(umb.getBusAddress(), rep);
                     });
@@ -1035,10 +1048,10 @@ public class Polarizer extends AbstractVerticle {
                 logger.info("Launching worker verticle to make TestCase import");
                 WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
                 this.executeImport(executor, args, cbl, address, jo)
-                        .subscribe((JsonObject resp) -> {
-                            logger.info(resp.getString("result"));
-                            // TODO: Dig into this json data, and get the JobID
-                        });
+                    .subscribe((JsonObject resp) -> {
+                        logger.info(resp.getString("result"));
+                        // TODO: Dig into this json data, and get the JobID
+                    });
 
                 jo.put("result", MessageResult.Status.PENDING.toString());
                 String msg = jo.encode();
@@ -1107,11 +1120,8 @@ public class Polarizer extends AbstractVerticle {
                 this.bus.publish(umbAddress, closeRequest);
             });
 
-            // Tell the UMB Verticle to start listening for messages.  It is listening
-            // for requests on "umb.messages.start" request address
-            this.bus.publish(umbAddress, body);
-            // The UMB Verticle will now start sending messages from the UMB
-            // to the event bus on address defined in next.getBusAddress()
+            // When the UMB Verticle starts sending messages from the UMB to the event bus on address defined in
+            // next.getBusAddress(), the handler defined here will forward messages to the websocket
             // TODO: Write an unregister handle that is called when action = stop
             // This will also close the websocket
             // FIXME:  Check if the length of the message is greater than the frame length, otherwise we will
@@ -1123,6 +1133,9 @@ public class Polarizer extends AbstractVerticle {
                 String item = msg.body();
                 wsSend(ws, item);
             });
+            // Tell the UMB Verticle to start listening for messages.  It is listening
+            // for requests on "umb.messages.start" request address
+            this.bus.publish(umbAddress, body);
         });
     }
 
@@ -1143,6 +1156,7 @@ public class Polarizer extends AbstractVerticle {
             // Send message on event bus to the APITestSuite Verticle
             String address = APITestSuite.class.getCanonicalName();
             logger.info("Sending message to: " + address);
+
             // FIXME: Tried using rxSend() but got an error that no consumer was registered
             this.bus.send("APITestSuite", body);
             // this.bus.rxSend("APITestSuite", body);

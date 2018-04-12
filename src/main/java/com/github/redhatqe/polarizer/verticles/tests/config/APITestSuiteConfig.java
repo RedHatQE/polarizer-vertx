@@ -22,6 +22,7 @@ public class APITestSuiteConfig implements Validator {
         List<Boolean> valid = new ArrayList<>();
         valid.add(this.xunit.validate());
         valid.add(this.testcase.validate());
+
         return valid.stream().allMatch(b -> b);
     }
 

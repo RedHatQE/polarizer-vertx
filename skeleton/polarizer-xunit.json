@@ -12,7 +12,8 @@
     "testrun": {
       "id": "",
       "title": "Sean Toner Polarize TestRun",
-      "template-id": "sean toner test template"
+      "template-id": "sean toner test template",
+      "testrun-type": "featureverification"
     },
     "custom": {
       "test-suite": {

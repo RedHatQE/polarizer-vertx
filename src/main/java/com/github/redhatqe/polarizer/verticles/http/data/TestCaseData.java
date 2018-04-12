@@ -39,8 +39,11 @@ public class TestCaseData extends PolarizerData {
                 this.config.setMapping(this.mapping);
             }
         }
-        if (other.mapping != null)
+        if (other.mapping != null) {
             this.mapping = other.mapping;
+            if (this.config != null)
+                this.config.setMapping(this.getMapping());
+        }
         return this;
     }
 
