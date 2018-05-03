@@ -4,12 +4,10 @@ plugins {
     id "maven"
     id "maven-publish"
     id "signing"
-    id "com.jfrog.bintray" version "1.7.3"
-    id "com.jfrog.artifactory" version "4.6.2"
 }
 
 group 'com.github.redhatqe.polarizer'
-version '0.2.0-SNAPSHOT'
+version '0.2.1-SNAPSHOT'
 def mainClassName = "io.vertx.core.Launcher"
 
 sourceCompatibility = 1.8
@@ -47,12 +45,18 @@ def getCreds(String polarizePropertyFile, String field1, String field2) {
 }
 
 Creds credsOssrh = getCreds(propFile)
-Creds credsBintray = getCreds(propFile, "bintrayUser", "bintrayPassword")
-
+// Creds credsBintray = getCreds(propFile, "bintrayUser", "bintrayPassword")
 
 repositories {
-    mavenCentral()
+    jcenter ()
     mavenLocal()
+    maven {
+        url 'https://oss.sonatype.org/content/repositories/snapshots/'
+        credentials {
+            username credsOssrh.user
+            password credsOssrh.pw
+        }
+    }
 }
 
 dependencies {
@@ -73,10 +77,6 @@ dependencies {
 
 task wrapper(type: Wrapper) {
     gradleVersion = '4.4'
-}
-
-allprojects {
-    apply plugin: "com.jfrog.artifactory"
 }
 
 shadowJar {
@@ -178,6 +178,7 @@ publishing {
     }
 }
 
+/*
 bintray {
     user = "polarizer-projects"
     key = credsBintray.pw
@@ -222,11 +223,11 @@ artifactory {
             publications('mavenJava')
 
             //properties = ['qa.level': 'basic', 'q.os': 'win32, deb, osx']  //Optional map of properties to attach to all published artifacts
-            /*
+
             The properties closure in the "defaults" task uses the following syntax:
             properties {
                 publicationName 'group:module:version:classifier@type', key1:'value1', key2:'value2', ...
-            }*/
+            }
 
             publishBuildInfo = true   //Publish build-info to Artifactory (true by default)
             publishArtifacts = true   //Publish artifacts to Artifactory (true by default)
@@ -241,6 +242,52 @@ artifactory {
             username = "${artifactory_user}"
             password = "${artifactory_password}"
             maven = true
+        }
+    }
+}
+*/
+
+uploadArchives {
+    repositories {
+        mavenDeployer {
+            Creds creds = getCreds(propFile)
+            beforeDeployment { MavenDeployment deployment -> signing.signPom(deployment) }
+
+            repository(url: "https://oss.sonatype.org/service/local/staging/deploy/maven2/") {
+                authentication(userName: creds.user, password: creds.pw)
+            }
+
+            snapshotRepository(url: "https://oss.sonatype.org/content/repositories/snapshots/") {
+                authentication(userName: creds.user, password: creds.pw)
+            }
+
+            pom.project {
+                name project.name
+                packaging 'jar'
+                description 'Library to help with configuration'
+                url projectURL
+
+                scm {
+                    connection "scm:git:${projectURL}.git"
+                    developerConnection "scm:git:${devURL}"
+                    url projectURL
+                }
+
+                licenses {
+                    license {
+                        name 'The Apache License, Version 2.0'
+                        url 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                    }
+                }
+
+                developers {
+                    developer {
+                        id 'stoner'
+                        name 'Sean Toner'
+                        email 'stoner@redhat.com'
+                    }
+                }
+            }
         }
     }
 }
