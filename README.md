@@ -42,6 +42,10 @@ Right now, polarizer-vertx builds (other than through me, the author) are broken
 credentials for artifactory.  The move to artifactory was caused by some strange bug from vertx, and I was unable to deploy to it to
 maven central.  
 
+**In Progress**
+
+
+
 [-vertx]: http://vertx.io/
 [-polarizer]: https://github.com/rarebreed/polarizer
 [-mercury]: https://github.com/rarebreed/mercury

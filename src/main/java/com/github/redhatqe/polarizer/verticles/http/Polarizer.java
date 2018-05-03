@@ -211,12 +211,12 @@ public class Polarizer extends AbstractVerticle {
                 , Consumer<String> fn
                 , Boolean isText) {
         Buffer buff = Buffer.buffer();
-        logger.debug("upload object: "  + upload.toString());
+        logger.info("upload object: "  + upload.toString());
         if (upload.isSizeAvailable())
             logger.info("Size of upload is %d", upload.size());
         upload.toFlowable().subscribe(
             n -> {
-                logger.info(String.format("Appended %d bytes to buffer. buff size = %d", n.length(), buff.length()));
+                // logger.info(String.format("Appended %d bytes to buffer. buff size = %d", n.length(), buff.length()));
                 buff.appendBuffer(n);
             },
             err -> {
@@ -492,6 +492,11 @@ public class Polarizer extends AbstractVerticle {
                     } catch (IOException ex) {
                         jo = new JsonObject();
                         jo.put("result", "failed");
+                    } finally {
+                        // Delete the temporary jar and mapping
+                        String jarPath = cfg.getPathToJar();
+                        FileHelper.deleteFile(jarPath);
+                        FileHelper.deleteFile(cfg.getMapping());
                     }
                     req.response().end(jo.encode());
                 }
