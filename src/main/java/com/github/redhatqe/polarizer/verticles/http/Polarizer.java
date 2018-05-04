@@ -113,11 +113,14 @@ public class Polarizer extends AbstractVerticle {
             doWebSocket(req, "/ws/xunit/import", this::xunitImportWS);
         })
         .rxListen(port)
-        .subscribe(succ -> logger.info(String.format("Server is now listening on port %d", this.port)),
-                err -> {
-                    logger.info(String.format("Could not start Server on %d: %s", this.port, err.getMessage()));
-                    err.printStackTrace();
-                });
+        .subscribe((HttpServer succ) -> {
+            String full = succ.toString();
+            logger.info(String.format("Server is now listening on port %d\n%s", succ.actualPort(), full));
+        },
+        err -> {
+            logger.info(String.format("Could not start Server on %d: %s", this.port, err.getMessage()));
+            err.printStackTrace();
+        });
     }
 
     private void doWebSocket(HttpServerRequest req, String test, Consumer<ServerWebSocket> fn) {
@@ -469,8 +472,6 @@ public class Polarizer extends AbstractVerticle {
 
     /**
      * This method will read in the jar file and the mapping file, and determine if a testcase import is needed.
-     *
-     * TODO: Needs to return a new mapping.json file
      *
      * @param rc context passed by server
      */
@@ -944,7 +945,8 @@ public class Polarizer extends AbstractVerticle {
     jmsToWebSocket( ServerWebSocket ws
                   , UMBListenerData umb) {
         // We're going to listen to the messages published to the address. let the MessageHandler parse the ObjectNode.
-        // TODO: for the timeout operator, if we surpass this, make it call a function to check the queue browser
+        // TODO: for the timeout operator, if we surpass timeout
+        // , make it call a function to check the queue browser
         // TODO: Figure out a way to limit the number emitted
         logger.info("Start listening for JMS messages to bridge to websocket");
 
@@ -1049,7 +1051,7 @@ public class Polarizer extends AbstractVerticle {
                 logger.info("Sending testcase import request");
 
                 // Run the import request (the post) in a worker verticle in case the http takes a long time
-                // TODO: make a post() using vertx client instead of blocking httpclient
+                // TODO: make async post() using vertx client instead of blocking httpclient
                 logger.info("Launching worker verticle to make TestCase import");
                 WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
                 this.executeImport(executor, args, cbl, address, jo)
