@@ -7,7 +7,7 @@ plugins {
 }
 
 group 'com.github.redhatqe.polarizer'
-version '0.2.1-SNAPSHOT'
+version '0.2.2'
 def mainClassName = "io.vertx.core.Launcher"
 
 sourceCompatibility = 1.8
@@ -16,8 +16,8 @@ String vertxVersion = '3.5.0'
 String mainVerticleName = 'com.github.redhatqe.polarizer.MainVerticle'
 String watchForChange = 'src/**/*'
 String doOnChange = '/.gradlew classes'
-String projectURL = 'https://github.com/Polarizer-Projects/polarizer-vertx.git'
-String devURL = 'git@github.com:Polarizer-Projects/polarizer-vertx.git'
+String projectURL = 'https://github.com/RedHatQE/polarizer-vertx.git'
+String devURL = 'git@github.com:RedHatQE/polarizer-vertx.git'
 String propFile = System.getProperty("user.home") + "/.polarizer/polarizer-project.properties"
 
 class Creds {
