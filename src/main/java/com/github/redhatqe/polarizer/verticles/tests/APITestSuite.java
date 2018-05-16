@@ -106,11 +106,11 @@ public class APITestSuite extends AbstractVerticle {
             return;
         }
         this.logger.info("================ Starting tests ================");
-        //suite.test("basic xunit generate test", this.testXunitGenerate());
+        suite.test("basic xunit generate test", this.testXunitGenerate());
         //suite.test("second xunit generate test", this.testXunitGenerate());
         //suite.test("basic xunit import test", this.testXunitImport());
         //suite.test("second xunit import test", this.testXunitImport());
-        suite.test("tests testcase mapper endpoint", this.testTCMapper());
+        //suite.test("tests testcase mapper endpoint", this.testTCMapper());
         //suite.test("tests testcase import endpoint", this.testTestCaseImport());
 
         ReportOptions consoleReport = new ReportOptions()

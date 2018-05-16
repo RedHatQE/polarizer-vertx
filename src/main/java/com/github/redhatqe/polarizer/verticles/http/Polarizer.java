@@ -1,5 +1,6 @@
 package com.github.redhatqe.polarizer.verticles.http;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -24,11 +25,8 @@ import com.github.redhatqe.polarizer.reporter.utils.Tuple;
 import com.github.redhatqe.polarizer.utils.FileHelper;
 import com.github.redhatqe.polarizer.utils.Tuple3;
 import com.github.redhatqe.polarizer.verticles.messaging.UMB;
-import com.github.redhatqe.polarizer.verticles.proto.TestCaseMessage;
-import com.github.redhatqe.polarizer.verticles.proto.TextMessage;
-import com.github.redhatqe.polarizer.verticles.proto.UMBListenerData;
+import com.github.redhatqe.polarizer.verticles.proto.*;
 import com.github.redhatqe.polarizer.verticles.http.data.*;
-import com.github.redhatqe.polarizer.verticles.proto.XUnitImportMessage;
 import com.github.redhatqe.polarizer.verticles.tests.APITestSuite;
 import io.reactivex.Observable;
 import io.reactivex.ObservableEmitter;
@@ -92,6 +90,7 @@ public class Polarizer extends AbstractVerticle {
 
             router.route("/testcase/mapper").method(HttpMethod.POST).handler(this::testCaseMapper);
             router.post("/testcase/import").handler(this::oldTestCaseImport);
+            router.post("/testcase/generate").handler(this::testCaseXMLGen);
             router.post("/xunit/generate").handler(this::xunitGenerator);
             router.post("/xunit/import").handler(this::xunitImport);
             router.post("/test").handler(this::test);
@@ -313,7 +312,14 @@ public class Polarizer extends AbstractVerticle {
                     XUnitConfig config = xgd.getConfig();
                     config.setCurrentXUnit(xgd.getXunitPath());
                     config.setMapping(xgd.getMapping());
-                    XUnitReporter.createPolarionXunit(config);
+                    try {
+                        XUnitReporter.createPolarionXunit(config);
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
+                    } catch (Error err) {
+                        logger.error("Threw an error");
+                        err.printStackTrace();
+                    }
 
                     JsonObject jo = new JsonObject();
                     try {
@@ -509,6 +515,53 @@ public class Polarizer extends AbstractVerticle {
             });
     }
 
+    /**
+     * This method will read in the jar file and the mapping file, and determine if a testcase import is needed.
+     *
+     * @param rc context passed by server
+     */
+    private void testCaseXMLGen(RoutingContext rc) {
+        logger.info("In testcaseMapper");
+        HttpServerRequest req = rc.request();
+
+        UUID id = UUID.randomUUID();
+        Observable<TestCaseData> s$ = this.makeTCMapperObservable(id, req);
+        s$.scan(TestCaseData::merge)
+                .subscribe(data -> {
+                    if (data.done()) {
+                        JsonObject jo;
+                        TestCaseConfig cfg = data.getConfig();
+                        try {
+                            jo = MainReflector.generate(cfg);
+                            // TODO: send the mapping.json back
+                            jo.put("result", "passed");
+                        } catch (IOException ex) {
+                            jo = new JsonObject();
+                            jo.put("result", "failed");
+                        } finally {
+                            // Delete the temporary jar and mapping
+                            String jarPath = cfg.getPathToJar();
+                            FileHelper.deleteFile(jarPath);
+                            FileHelper.deleteFile(cfg.getMapping());
+                        }
+                        req.response().end(jo.encode());
+                    }
+                }, err -> {
+                    logger.error(err.getMessage());
+                    JsonObject jo = new JsonObject();
+                    jo.put("result", "error");
+                    jo.put("message", "Failed uploading necessary files");
+                });
+    }
+
+    public static String
+    mapFileToText(Map<String, Map<String, IdParams>> mapping) throws JsonProcessingException {
+        ObjectMapper mapper = new ObjectMapper();
+        TreeMap tm = new TreeMap<>(mapping);
+        String json = mapper.writerWithDefaultPrettyPrinter().writeValueAsString(tm);
+        return json;
+    }
+
     private static void
     searchTestCases( String projID
                    , Testcases tcs
@@ -561,6 +614,7 @@ public class Polarizer extends AbstractVerticle {
                          , TestCaseInfo tt) {
         return (ObjectNode node) -> {
             MessageResult<DefaultResult> result = new MessageResult<>();
+            result.info = new DefaultResult();
             result.setBody(node.toString());
             if (node.toString().equals("")) {
                 logger.warn("No message was received");
@@ -606,7 +660,12 @@ public class Polarizer extends AbstractVerticle {
                     logger.error(String.format("Unable to add %s to mapping file", name));
                 }
             });
-
+            // Convert the mapFile (which is actually the mapping.json to text
+            try {
+                result.info.setText(mapFileToText(mapFile));
+            } catch (JsonProcessingException e) {
+                e.printStackTrace();
+            }
             result.setStatus(MessageResult.Status.SUCCESS);
             return result;
         };
@@ -864,13 +923,17 @@ public class Polarizer extends AbstractVerticle {
             Disposable disp = cbl.getResultSubject()
                 .timeout(timeout, TimeUnit.MILLISECONDS)
                 .take(msgCount)
-                .subscribe((MessageResult<DefaultResult> next) -> {
+                .map((MessageResult<DefaultResult> next) -> {
                     String body = next.getBody() != null ? next.getBody() : "No Body";
                     String info = next.info != null ? next.info.getText() : "No Info";
                     JsonObject ijo = new JsonObject();
                     ijo.put("id", clientId);
                     ijo.put("message", body);
                     ijo.put("info", info);
+                    return ijo;
+                })
+                .subscribe((JsonObject ijo) -> {
+
                     this.bus.publish(umb.getBusAddress(), ijo.encode());
                 }, err -> {
                     String error = "Error getting messages from UMB";
@@ -1010,6 +1073,7 @@ public class Polarizer extends AbstractVerticle {
                         this.bus.publish(umb.getBusAddress(), rep);
                     });
             }, err -> {
+                // Send a response back indicating failure to the websocket client
                 logger.error("Failed uploading necessary files");
                 JsonObject jo = new JsonObject();
                 jo.put("result", MessageResult.Status.SEND_FAIL);
@@ -1056,7 +1120,11 @@ public class Polarizer extends AbstractVerticle {
                 WorkerExecutor executor = vertx.createSharedWorkerExecutor("TestCaseImport.request");
                 this.executeImport(executor, args, cbl, address, jo)
                     .subscribe((JsonObject resp) -> {
-                        logger.info(resp.getString("result"));
+                        if (resp.containsKey("result")) {
+                            JsonObject res = resp.getJsonObject("result");
+                            String text = res.encodePrettily();
+                            logger.info(text);
+                        }
                         // TODO: Dig into this json data, and get the JobID
                     });
 
