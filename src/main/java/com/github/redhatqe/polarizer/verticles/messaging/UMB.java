@@ -98,6 +98,7 @@ public class UMB extends AbstractVerticle {
                     err -> {
                         String error = "Error getting messages from UMB";
                         logger.error(error);
+			logger.error(err.toString());
                         JsonObject ejo = new JsonObject();
                         ejo.put("id", clientId);
                         ejo.put("message", error);

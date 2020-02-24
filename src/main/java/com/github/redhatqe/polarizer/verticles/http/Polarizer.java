@@ -80,7 +80,7 @@ public class Polarizer extends AbstractVerticle {
         logger.info(String.format("Starting polarizer web service on port %d", port));
         //String host = config().getString(CONFIG_HTTP_SERVER_HOST, "rhsm-cimetrics.usersys.redhat.com");
         HttpServerOptions opts = new HttpServerOptions()
-                .setMaxWebsocketFrameSize(1024 * 1024 * 16)     // 16Mb max
+                .setMaxWebsocketFrameSize(1024 * 1024 * 32)     // 32Mb max
                 .setReusePort(true);
         HttpServer server = vertx.createHttpServer(opts);  // TODO: pass opts to the method for TLS
         Router router = Router.router(vertx);
@@ -938,6 +938,7 @@ public class Polarizer extends AbstractVerticle {
                 }, err -> {
                     String error = "Error getting messages from UMB";
                     logger.error(error);
+		    logger.error(err.toString());
                     JsonObject ejo = new JsonObject();
                     ejo.put("id", clientId);
                     ejo.put("message", error);
