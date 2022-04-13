@@ -17,9 +17,8 @@ import io.vertx.reactivex.core.eventbus.MessageConsumer;
 import io.vertx.reactivex.ext.unit.TestCompletion;
 import io.vertx.reactivex.ext.unit.TestContext;
 import io.vertx.reactivex.ext.unit.TestSuite;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Paths;
@@ -27,7 +26,7 @@ import java.nio.file.Paths;
 
 public class APITestSuite extends AbstractVerticle {
     private TestSuite suite;
-    private Logger logger = LogManager.getLogger(APITestSuite.class.getSimpleName());
+    private Logger logger = LoggerFactory.getLogger(APITestSuite.class.getSimpleName());
     private int port;
     private String host;
     private APITestSuiteConfig sconfig;
