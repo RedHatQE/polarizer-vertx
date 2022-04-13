@@ -14,8 +14,8 @@ import io.vertx.core.json.JsonObject;
 import io.vertx.reactivex.core.AbstractVerticle;
 import io.vertx.reactivex.core.eventbus.EventBus;
 import io.vertx.reactivex.core.eventbus.Message;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.jms.Connection;
 import javax.jms.JMSException;
@@ -26,7 +26,7 @@ import java.util.Map;
 import java.util.Optional;
 
 public class UMB extends AbstractVerticle {
-    private static Logger logger = LogManager.getLogger(UMB.class.getSimpleName());
+    private static Logger logger = LoggerFactory.getLogger(UMB.class.getSimpleName());
     private EventBus bus;
     public Map<String, Connection> busListeners = new HashMap<>();
     public Map<String, Disposable> disposables = new HashMap<>();

@@ -48,8 +48,8 @@ import io.vertx.reactivex.core.net.SocketAddress;
 import io.vertx.reactivex.ext.web.Router;
 import io.vertx.reactivex.ext.web.RoutingContext;
 import io.vertx.reactivex.ext.web.handler.BodyHandler;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.jms.Connection;
 import java.io.File;
@@ -61,7 +61,7 @@ import java.util.stream.Collectors;
 
 
 public class Polarizer extends AbstractVerticle {
-    private static Logger logger = LogManager.getLogger(Polarizer.class.getSimpleName());
+    private static Logger logger = LoggerFactory.getLogger(Polarizer.class.getSimpleName());
     public static final String CONFIG_HTTP_SERVER_PORT = "port";
     public static final String TCIMPORT_BUS = "testcase.import";
     public static final String TCIMPORT_TAG_PREFIX = "testcase-import";
@@ -335,7 +335,7 @@ public class Polarizer extends AbstractVerticle {
                 }
                 else {
                     logger.info("Not all parameters uploaded yet");
-                    logger.info(xgd.getCompleted());
+                    logger.info(xgd.getCompleted().toString());
                 }
             }, err -> {
                 logger.error("Failure getting uploaded data " + err.getMessage());

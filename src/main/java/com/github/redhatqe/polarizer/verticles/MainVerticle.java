@@ -15,15 +15,14 @@ import io.vertx.core.VertxOptions;
 import io.vertx.core.json.JsonObject;
 import io.vertx.reactivex.core.AbstractVerticle;
 import io.vertx.reactivex.core.Vertx;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Paths;
 
 public class MainVerticle extends AbstractVerticle {
-    private static Logger logger = LogManager.getLogger(Polarizer.class.getSimpleName());
+    private static Logger logger = LoggerFactory.getLogger(Polarizer.class.getSimpleName());
     public static final String POLARIZER_VERT = Polarizer.class.getCanonicalName();
     public static final String POLARIZER_ENV = "POLARIZER_MAIN_CONFIG";
     public static final String POLARIZER_PROP = "polarizer.main.config";
