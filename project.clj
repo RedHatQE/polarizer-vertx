@@ -3,6 +3,9 @@
   :url "https://github.com/RedHatQE/polarizer-vert"
   :java-source-path "src"
   :java-source-paths ["src"]
+  :main io.vertx.core.Launcher
+  :manifest {"Main-Verticle" com.github.redhatqe.polarizer.verticles.MainVerticle}
+  :uberjar-merge-with {"META-INF/services/io.vertx.core.spi.VerticleFactory" [slurp str spit]}
   :dependencies [
     [io.vertx/vertx-web-client "3.5.0"]
     [io.vertx/vertx-core "3.5.0"]
@@ -16,4 +19,5 @@
     [com.github.redhatqe/polarizer-reporter "0.3.0-SNAPSHOT"]
     [com.github.redhatqe/polarizer-polarizer "0.3.0-SNAPSHOT"]]
   :javac-options {:debug "on"}
-  :plugins [[lein2-eclipse "2.0.0"]])
+  :plugins [[lein2-eclipse "2.0.0"]]
+  :profiles {:uberjar {:aot :all}})
