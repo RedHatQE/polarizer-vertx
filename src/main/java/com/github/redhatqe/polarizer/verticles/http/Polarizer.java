@@ -80,7 +80,7 @@ public class Polarizer extends AbstractVerticle {
         logger.info(String.format("Starting polarizer web service on port %d", port));
         //String host = config().getString(CONFIG_HTTP_SERVER_HOST, "rhsm-cimetrics.usersys.redhat.com");
         HttpServerOptions opts = new HttpServerOptions()
-                .setMaxWebsocketFrameSize(1024 * 1024 * 48)     // 48Mb max
+                .setMaxWebsocketFrameSize(1024 * 1024 * 96)     // 96Mb max
                 .setReusePort(true);
         HttpServer server = vertx.createHttpServer(opts);  // TODO: pass opts to the method for TLS
         Router router = Router.router(vertx);
@@ -499,7 +499,12 @@ public class Polarizer extends AbstractVerticle {
                     } catch (IOException ex) {
                         jo = new JsonObject();
                         jo.put("result", "failed");
-                    } finally {
+                    } catch (Exception e){
+			logger.error("Error when processing data:" + e.toString());
+			jo = new JsonObject();
+                        jo.put("result", "failed. reason:" + e.toString());
+		    }
+		    finally {
                         // Delete the temporary jar and mapping
                         String jarPath = cfg.getPathToJar();
                         FileHelper.deleteFile(jarPath);
